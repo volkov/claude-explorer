@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Transcript Viewer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-surface: #161b22;
+  --bg-surface2: #1c2129;
+  --bg-user: #0c2d48;
+  --bg-thinking: #1a1328;
+  --bg-tool: #121820;
+  --bg-tool-result: #0a0f16;
+  --text: #e6edf3;
+  --text-dim: #8b949e;
+  --text-dimmer: #6e7681;
+  --border: #30363d;
+  --accent: #58a6ff;
+  --accent-green: #3fb950;
+  --accent-purple: #bc8cff;
+  --accent-orange: #d29922;
+  --accent-red: #f85149;
+  --radius: 8px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.container { max-width: 1000px; margin: 0 auto; padding: 16px 20px; }
+
+/* Header */
+.header {
+  border-bottom: 1px solid var(--border);
+  padding: 12px 20px;
+  background: var(--bg-surface);
+  position: sticky; top: 0; z-index: 100;
+}
+.header-inner { max-width: 1000px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+.header h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
+.breadcrumb { font-size: 13px; color: var(--text-dim); }
+.breadcrumb a { color: var(--text-dim); }
+.breadcrumb a:hover { color: var(--accent); }
+.breadcrumb span { margin: 0 6px; }
+
+/* Search */
+.search-bar {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+.search-bar:focus { outline: none; border-color: var(--accent); }
+
+/* Project cards */
+.project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.project-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.project-card:hover { border-color: var(--accent); }
+.project-card h3 { font-size: 15px; font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+.project-card .meta { font-size: 12px; color: var(--text-dim); display: flex; gap: 12px; }
+
+/* Session table */
+.session-list { display: flex; flex-direction: column; gap: 4px; }
+.session-row {
+  display: grid;
+  grid-template-columns: 1fr 160px 80px 60px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 14px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: border-color 0.15s;
+  font-size: 13px;
+}
+.session-row:hover { border-color: var(--accent); }
+.session-row .slug { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-row .date { color: var(--text-dim); font-size: 12px; }
+.session-row .size { color: var(--text-dimmer); font-size: 12px; text-align: right; }
+.session-row .badge {
+  background: var(--accent);
+  color: #000;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 10px;
+  text-align: center;
+}
+.session-row .badge.empty { background: transparent; }
+
+/* Transcript */
+.transcript { display: flex; flex-direction: column; gap: 4px; padding-bottom: 60px; }
+
+.msg {
+  border-radius: var(--radius);
+  padding: 12px 16px;
+}
+
+.msg.user-msg {
+  background: var(--bg-user);
+  border-left: 3px solid var(--accent);
+}
+
+.msg.assistant-msg {
+  background: var(--bg-surface);
+}
+
+.msg-header {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.msg-header .role {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.msg-header .role.user { background: #0c3d6a; color: var(--accent); }
+.msg-header .role.assistant { background: #1a2c1a; color: var(--accent-green); }
+
+/* Thinking */
+.thinking-block {
+  margin: 6px 0;
+  border-radius: 6px;
+  background: var(--bg-thinking);
+  border: 1px solid #2d1f47;
+}
+.thinking-block summary {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--accent-purple);
+  user-select: none;
+}
+.thinking-block .thinking-content {
+  padding: 8px 12px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-dim);
+  max-height: 400px;
+  overflow-y: auto;
+  border-top: 1px solid #2d1f47;
+}
+
+/* Tool use */
+.tool-block {
+  margin: 6px 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-tool);
+  overflow: hidden;
+}
+.tool-header {
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+.tool-icon { font-size: 14px; }
+.tool-name {
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+.tool-name.bash { background: #1a2b1a; color: var(--accent-green); }
+.tool-name.read, .tool-name.write, .tool-name.edit { background: #2a2510; color: var(--accent-orange); }
+.tool-name.grep, .tool-name.glob { background: #1a1a2e; color: var(--accent-purple); }
+.tool-name.task, .tool-name.skill { background: #0c2d48; color: var(--accent); }
+.tool-name.other { background: #1a1a1a; color: var(--text-dim); }
+.tool-desc { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.tool-input {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-dim);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* Tool result */
+.tool-result {
+  border-top: 1px solid var(--border);
+  background: var(--bg-tool-result);
+  padding: 8px 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-dim);
+  max-height: 300px;
+  overflow-y: auto;
+}
+.tool-result.error { color: var(--accent-red); }
+.tool-result.collapsed { max-height: 120px; position: relative; }
+.tool-result.collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 40px;
+  background: linear-gradient(transparent, var(--bg-tool-result));
+}
+.expand-btn {
+  display: block;
+  width: 100%;
+  padding: 4px;
+  background: var(--bg-surface2);
+  border: none;
+  border-top: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* Subagent link */
+.subagent-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  margin-top: 4px;
+  background: #0c2d48;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.subagent-link:hover { background: #0e3a5e; text-decoration: none; }
+
+/* Subagent banner */
+.subagent-banner {
+  background: #0c2d48;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+/* Markdown content */
+.md-content { line-height: 1.65; }
+.md-content p { margin: 4px 0; }
+.md-content pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  overflow-x: auto;
+  margin: 6px 0;
+}
+.md-content code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 12px;
+}
+.md-content :not(pre) > code {
+  background: #282e37;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.md-content h1, .md-content h2, .md-content h3 { margin: 8px 0 4px; }
+.md-content ul, .md-content ol { padding-left: 20px; margin: 4px 0; }
+.md-content table { border-collapse: collapse; margin: 6px 0; }
+.md-content th, .md-content td { border: 1px solid var(--border); padding: 4px 8px; font-size: 13px; }
+
+/* Loading */
+.loading { text-align: center; padding: 60px; color: var(--text-dim); }
+.spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Session meta */
+.session-meta {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+.session-meta span { white-space: nowrap; }
+.session-meta strong { color: var(--text); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-inner">
+    <h1><a href="#/" style="color: var(--text);">Claude Transcripts</a></h1>
+    <div id="breadcrumb" class="breadcrumb"></div>
+  </div>
+</div>
+
+<div class="container">
+  <div id="app">
+    <div class="loading"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<script>
+const $ = document.getElementById.bind(document);
+const app = $('app');
+const breadcrumb = $('breadcrumb');
+
+// Configure marked
+marked.setOptions({
+  highlight: (code, lang) => {
+    if (lang && hljs.getLanguage(lang)) {
+      try { return hljs.highlight(code, { language: lang }).value; } catch {}
+    }
+    try { return hljs.highlightAuto(code).value; } catch {}
+    return code;
+  },
+  breaks: false,
+  gfm: true,
+});
+
+// Router
+window.addEventListener('hashchange', route);
+window.addEventListener('load', route);
+
+function route() {
+  const hash = location.hash.slice(1) || '/';
+  const parts = hash.split('/').filter(Boolean);
+
+  if (parts[0] === 'project' && parts[1]) {
+    renderSessionList(parts[1]);
+  } else if (parts[0] === 'session' && parts[1] && parts[2]) {
+    renderTranscript(parts[1], parts[2]);
+  } else if (parts[0] === 'subagent' && parts[1] && parts[2] && parts[3]) {
+    renderSubagent(parts[1], parts[2], parts[3]);
+  } else {
+    renderProjectList();
+  }
+}
+
+// API helpers
+async function api(path) {
+  const res = await fetch(path);
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+// Views
+async function renderProjectList() {
+  breadcrumb.innerHTML = '';
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+  const projects = await api('/api/projects');
+  for (const p of projects) _projectNames[p.dir] = p.name;
+  let html = '<input class="search-bar" placeholder="Search projects..." id="projectSearch">';
+  html += '<div class="project-grid" id="projectGrid">';
+  for (const p of projects) {
+    const date = new Date(p.lastModified).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+    html += `
+      <div class="project-card" onclick="location.hash='#/project/${encodeURIComponent(p.dir)}'">
+        <h3>${esc(p.name)}</h3>
+        <div class="meta">
+          <span>${p.sessionCount} sessions</span>
+          <span>${date}</span>
+        </div>
+      </div>`;
+  }
+  html += '</div>';
+  app.innerHTML = html;
+
+  $('projectSearch').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    document.querySelectorAll('.project-card').forEach(card => {
+      card.style.display = card.querySelector('h3').textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+}
+
+async function renderSessionList(projectDir) {
+  const decoded = decodeURIComponent(projectDir);
+  const name = humanName(decoded);
+  breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span>${esc(name)}`;
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+  const sessions = await api(`/api/sessions/${encodeURIComponent(decoded)}`);
+  let html = '<input class="search-bar" placeholder="Search sessions..." id="sessionSearch">';
+  html += '<div class="session-list" id="sessionGrid">';
+  for (const s of sessions) {
+    const date = new Date(s.timestamp).toLocaleString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const size = (s.fileSize / 1024).toFixed(0) + ' KB';
+    const badge = s.subagentCount > 0 ? `<span class="badge">${s.subagentCount} agents</span>` : '<span class="badge empty"></span>';
+    html += `
+      <div class="session-row" onclick="location.hash='#/session/${encodeURIComponent(decoded)}/${s.sessionId}'">
+        <span class="slug">${esc(s.slug || s.sessionId.slice(0, 8))}</span>
+        <span class="date">${date}</span>
+        <span class="size">${size}</span>
+        ${badge}
+      </div>`;
+  }
+  html += '</div>';
+  app.innerHTML = html;
+
+  $('sessionSearch').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    document.querySelectorAll('.session-row').forEach(row => {
+      row.style.display = row.querySelector('.slug').textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  });
+}
+
+async function renderTranscript(projectDir, sessionId) {
+  const decoded = decodeURIComponent(projectDir);
+  const name = humanName(decoded);
+  breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span><a href="#/project/${encodeURIComponent(decoded)}">${esc(name)}</a><span>/</span>Session`;
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+  const data = await api(`/api/transcript/${encodeURIComponent(decoded)}/${sessionId}`);
+  renderTranscriptData(data, decoded, sessionId);
+}
+
+async function renderSubagent(projectDir, sessionId, agentId) {
+  const decoded = decodeURIComponent(projectDir);
+  const name = humanName(decoded);
+  breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span><a href="#/project/${encodeURIComponent(decoded)}">${esc(name)}</a><span>/</span><a href="#/session/${encodeURIComponent(decoded)}/${sessionId}">Session</a><span>/</span>Agent ${esc(agentId.slice(0, 7))}`;
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+  const data = await api(`/api/transcript/${encodeURIComponent(decoded)}/${sessionId}/subagent/${agentId}`);
+  const banner = `<div class="subagent-banner">
+    <span>Subagent transcript <strong>${esc(agentId.slice(0, 7))}</strong></span>
+    <a href="#/session/${encodeURIComponent(decoded)}/${sessionId}">Back to parent session</a>
+  </div>`;
+  renderTranscriptData(data, decoded, sessionId, banner);
+}
+
+function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
+  if (!data || !data.messages) {
+    app.innerHTML = '<div class="loading">Transcript not found</div>';
+    return;
+  }
+
+  // Build tool result map: tool_use_id -> {content, isError, agentId, agentLink}
+  const toolResultMap = new Map();
+  for (const msg of data.messages) {
+    if (msg.toolResults) {
+      for (const tr of msg.toolResults) {
+        toolResultMap.set(tr.toolUseId, tr);
+      }
+    }
+  }
+
+  let html = '';
+  if (bannerHtml) html += bannerHtml;
+
+  // Session meta
+  const meta = [];
+  if (data.slug) meta.push(`<span><strong>Session:</strong> ${esc(data.slug)}</span>`);
+  if (data.cwd) meta.push(`<span><strong>CWD:</strong> ${esc(data.cwd)}</span>`);
+  if (data.version) meta.push(`<span><strong>Version:</strong> ${esc(data.version)}</span>`);
+  if (data.gitBranch) meta.push(`<span><strong>Branch:</strong> ${esc(data.gitBranch)}</span>`);
+  if (meta.length) html += `<div class="session-meta">${meta.join('')}</div>`;
+
+  html += '<div class="transcript">';
+
+  for (const msg of data.messages) {
+    // Skip user messages that are purely tool results (they're shown inline with assistant)
+    if (msg.type === 'user' && !msg.text && msg.toolResults && msg.toolResults.length > 0) continue;
+    // Skip sidechain messages in main transcript
+    if (msg.isSidechain && !data.agentId) continue;
+
+    if (msg.type === 'user' && msg.text) {
+      const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+      html += `<div class="msg user-msg">
+        <div class="msg-header"><span class="role user">User</span><span>${time}</span></div>
+        <div class="md-content">${renderMarkdown(msg.text)}</div>
+      </div>`;
+    }
+
+    if (msg.type === 'assistant' && msg.blocks) {
+      const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+      const modelLabel = msg.model ? ` &middot; ${esc(msg.model)}` : '';
+      html += `<div class="msg assistant-msg">
+        <div class="msg-header"><span class="role assistant">Assistant</span><span>${time}${modelLabel}</span></div>`;
+
+      for (const block of msg.blocks) {
+        if (block.type === 'thinking') {
+          html += `<details class="thinking-block">
+            <summary>Thinking...</summary>
+            <div class="thinking-content">${esc(block.content || '')}</div>
+          </details>`;
+        } else if (block.type === 'text') {
+          html += `<div class="md-content">${renderMarkdown(block.content)}</div>`;
+        } else if (block.type === 'tool_use') {
+          html += renderToolUse(block, toolResultMap, projectDir, sessionId);
+        }
+      }
+      html += '</div>';
+    }
+  }
+
+  html += '</div>';
+  app.innerHTML = html;
+
+  // Highlight code blocks
+  document.querySelectorAll('.md-content pre code').forEach(el => {
+    try { hljs.highlightElement(el); } catch {}
+  });
+}
+
+function renderToolUse(block, toolResultMap, projectDir, sessionId) {
+  const nameClass = getToolClass(block.name);
+  const icon = getToolIcon(block.name);
+  const desc = getToolDesc(block);
+  const inputId = 'ti_' + (block.id || '').replace(/[^a-z0-9]/gi, '').slice(0, 12) + Math.random().toString(36).slice(2, 6);
+  const resultId = 'tr_' + inputId;
+
+  let html = `<div class="tool-block" id="tool-${esc(block.id || '')}">`;
+  html += `<div class="tool-header" onclick="toggleEl('${inputId}')">
+    <span class="tool-icon">${icon}</span>
+    <span class="tool-name ${nameClass}">${esc(block.name)}</span>
+    <span class="tool-desc">${esc(desc)}</span>
+  </div>`;
+
+  // Tool input (collapsed by default)
+  const inputStr = formatToolInput(block);
+  if (inputStr) {
+    html += `<div class="tool-input" id="${inputId}" style="display:none">${esc(inputStr)}</div>`;
+  }
+
+  // Subagent link
+  if (block.agentLink) {
+    html += `<div style="padding:6px 10px;border-top:1px solid var(--border)">
+      <a class="subagent-link" href="${block.agentLink}">View subagent transcript &rarr;</a>
+    </div>`;
+  }
+
+  // Tool result
+  const result = toolResultMap.get(block.id);
+  if (result) {
+    const lines = (result.content || '').split('\n');
+    const isLong = lines.length > 30;
+    const collapsed = isLong ? ' collapsed' : '';
+    const errClass = result.isError ? ' error' : '';
+    html += `<div class="tool-result${errClass}${collapsed}" id="${resultId}">${esc(result.content || '(empty)')}</div>`;
+    if (isLong) {
+      html += `<button class="expand-btn" onclick="expandResult('${resultId}', this)">Show all ${lines.length} lines</button>`;
+    }
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function getToolClass(name) {
+  const n = (name || '').toLowerCase();
+  if (n === 'bash') return 'bash';
+  if (n === 'read') return 'read';
+  if (n === 'write') return 'write';
+  if (n === 'edit') return 'edit';
+  if (n === 'grep') return 'grep';
+  if (n === 'glob') return 'glob';
+  if (n === 'task') return 'task';
+  if (n === 'skill') return 'skill';
+  return 'other';
+}
+
+function getToolIcon(name) {
+  const n = (name || '').toLowerCase();
+  const icons = {
+    bash: '\u25b6', read: '\ud83d\udcc4', write: '\u270f\ufe0f', edit: '\u270f\ufe0f',
+    grep: '\ud83d\udd0d', glob: '\ud83d\udcc1', task: '\ud83d\udd00', skill: '\u26a1',
+    askuserquestion: '\u2753', enterplanmode: '\ud83d\udccb', exitplanmode: '\u2705',
+    webfetch: '\ud83c\udf10', websearch: '\ud83c\udf10',
+  };
+  return icons[n] || '\u2699\ufe0f';
+}
+
+function getToolDesc(block) {
+  const input = block.input || {};
+  const n = (block.name || '').toLowerCase();
+  if (n === 'bash') return input.command || input.description || '';
+  if (n === 'read') return input.file_path || '';
+  if (n === 'write') return input.file_path || '';
+  if (n === 'edit') return input.file_path || '';
+  if (n === 'grep') return `${input.pattern || ''} ${input.path || ''}`.trim();
+  if (n === 'glob') return input.pattern || '';
+  if (n === 'task') return input.description || input.prompt?.slice(0, 80) || '';
+  if (n === 'skill') return input.skill || '';
+  return JSON.stringify(input).slice(0, 80);
+}
+
+function formatToolInput(block) {
+  const input = block.input || {};
+  const n = (block.name || '').toLowerCase();
+  if (n === 'bash') return input.command || '';
+  if (n === 'read') return input.file_path || '';
+  if (n === 'write') return `File: ${input.file_path || ''}\n---\n${(input.content || '').slice(0, 2000)}`;
+  if (n === 'edit') return `File: ${input.file_path || ''}\n\n--- old ---\n${input.old_string || ''}\n\n--- new ---\n${input.new_string || ''}`;
+  if (n === 'task') return input.prompt || '';
+  if (n === 'grep') return JSON.stringify(input, null, 2);
+  return JSON.stringify(input, null, 2);
+}
+
+function renderMarkdown(text) {
+  if (!text) return '';
+  try { return marked.parse(text); } catch { return esc(text); }
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// projectNames cache from API
+const _projectNames = {};
+
+function humanName(dirName) {
+  if (_projectNames[dirName]) return _projectNames[dirName];
+  // Fallback: strip everything up to and including the home dir portion
+  // -Users-serg-v-project -> project
+  const m = dirName.match(/^-Users-[^/]+-(.+)$/);
+  if (m) return m[1];
+  // Try: remove -Users-XX-XX- pattern (username with hyphens)
+  const idx = dirName.indexOf('-', dirName.indexOf('-', dirName.indexOf('-') + 1) + 1);
+  if (idx > 0 && idx < dirName.length - 1) return dirName.slice(idx + 1);
+  return dirName;
+}
+
+// Global helpers for onclick
+window.toggleEl = function(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+};
+
+window.expandResult = function(id, btn) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.classList.remove('collapsed');
+    if (btn) btn.remove();
+  }
+};
+</script>
+</body>
+</html>
