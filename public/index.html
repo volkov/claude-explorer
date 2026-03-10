@@ -392,7 +392,13 @@ async function renderProjectList() {
   breadcrumb.innerHTML = '';
   app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
-  const projects = await api('/api/projects');
+  let projects;
+  try {
+    projects = await api('/api/projects');
+  } catch (e) {
+    app.innerHTML = `<div class="loading">Error loading projects: ${esc(e.message)}</div>`;
+    return;
+  }
   for (const p of projects) _projectNames[p.dir] = p.name;
   let html = '<input class="search-bar" placeholder="Search projects..." id="projectSearch">';
   html += '<div class="project-grid" id="projectGrid">';
@@ -424,7 +430,13 @@ async function renderSessionList(projectDir) {
   breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span>${esc(name)}`;
   app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
-  const sessions = await api(`/api/sessions/${encodeURIComponent(decoded)}`);
+  let sessions;
+  try {
+    sessions = await api(`/api/sessions/${encodeURIComponent(decoded)}`);
+  } catch (e) {
+    app.innerHTML = `<div class="loading">Error loading sessions: ${esc(e.message)}</div>`;
+    return;
+  }
   let html = '<input class="search-bar" placeholder="Search sessions..." id="sessionSearch">';
   html += '<div class="session-list" id="sessionGrid">';
   for (const s of sessions) {
@@ -456,8 +468,12 @@ async function renderTranscript(projectDir, sessionId) {
   breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span><a href="#/project/${encodeURIComponent(decoded)}">${esc(name)}</a><span>/</span>Session`;
   app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
-  const data = await api(`/api/transcript/${encodeURIComponent(decoded)}/${sessionId}`);
-  renderTranscriptData(data, decoded, sessionId);
+  try {
+    const data = await api(`/api/transcript/${encodeURIComponent(decoded)}/${sessionId}`);
+    renderTranscriptData(data, decoded, sessionId);
+  } catch (e) {
+    app.innerHTML = `<div class="loading">Error loading transcript: ${esc(e.message)}</div>`;
+  }
 }
 
 async function renderSubagent(projectDir, sessionId, agentId) {
@@ -466,12 +482,16 @@ async function renderSubagent(projectDir, sessionId, agentId) {
   breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span><a href="#/project/${encodeURIComponent(decoded)}">${esc(name)}</a><span>/</span><a href="#/session/${encodeURIComponent(decoded)}/${sessionId}">Session</a><span>/</span>Agent ${esc(agentId.slice(0, 7))}`;
   app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
-  const data = await api(`/api/transcript/${encodeURIComponent(decoded)}/${sessionId}/subagent/${agentId}`);
-  const banner = `<div class="subagent-banner">
-    <span>Subagent transcript <strong>${esc(agentId.slice(0, 7))}</strong></span>
-    <a href="#/session/${encodeURIComponent(decoded)}/${sessionId}">Back to parent session</a>
-  </div>`;
-  renderTranscriptData(data, decoded, sessionId, banner);
+  try {
+    const data = await api(`/api/transcript/${encodeURIComponent(decoded)}/${sessionId}/subagent/${agentId}`);
+    const banner = `<div class="subagent-banner">
+      <span>Subagent transcript <strong>${esc(agentId.slice(0, 7))}</strong></span>
+      <a href="#/session/${encodeURIComponent(decoded)}/${sessionId}">Back to parent session</a>
+    </div>`;
+    renderTranscriptData(data, decoded, sessionId, banner);
+  } catch (e) {
+    app.innerHTML = `<div class="loading">Error loading subagent transcript: ${esc(e.message)}</div>`;
+  }
 }
 
 function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
