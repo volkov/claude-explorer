@@ -160,18 +160,17 @@ async function parseTranscript(projectDir, sessionId, agentId) {
       if (obj.type === 'progress') return;
       if (obj.type === 'file-history-snapshot') return;
       if (obj.type === 'system') return;
+      if (obj.type === 'last-prompt') return;
 
-      // Extract session metadata from first meaningful entry
-      if (!sessionMeta.sessionId && obj.sessionId) {
-        sessionMeta = {
-          sessionId: obj.sessionId,
-          slug: obj.slug,
-          cwd: obj.cwd,
-          version: obj.version,
-          gitBranch: obj.gitBranch,
-        };
-      }
+      // Extract session metadata incrementally (field by field)
+      // This ensures metadata is captured even when queue-operation
+      // entries appear before user/assistant messages
+      if (obj.sessionId && !sessionMeta.sessionId) sessionMeta.sessionId = obj.sessionId;
       if (obj.slug && !sessionMeta.slug) sessionMeta.slug = obj.slug;
+      if (obj.cwd && !sessionMeta.cwd) sessionMeta.cwd = obj.cwd;
+      if (obj.version && !sessionMeta.version) sessionMeta.version = obj.version;
+      if (obj.gitBranch && !sessionMeta.gitBranch) sessionMeta.gitBranch = obj.gitBranch;
+      if (obj.message?.model && !sessionMeta.model) sessionMeta.model = obj.message.model;
 
       // Queue operations — track subagent spawning
       if (obj.type === 'queue-operation' && obj.operation === 'enqueue') {
