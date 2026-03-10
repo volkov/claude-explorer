@@ -45,6 +45,7 @@ REMOTE="origin"
 log() { echo "[supervisor $(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 CHILD_PID=""
+APP_PORT="${PORT:-3939}"
 
 start_process() {
   log "Starting: $CMD"
@@ -73,8 +74,25 @@ stop_process() {
   fi
 }
 
+# Wait until the port is free (up to 10 seconds)
+wait_for_port_free() {
+  local port="$1"
+  local max_attempts=20
+  local attempt=0
+  while lsof -iTCP:"$port" -sTCP:LISTEN -t &>/dev/null; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      log "Warning: port $port still in use after ${max_attempts}x0.5s, proceeding anyway"
+      return 1
+    fi
+    sleep 0.5
+  done
+  return 0
+}
+
 restart_process() {
   stop_process
+  wait_for_port_free "$APP_PORT"
   start_process
 }
 
