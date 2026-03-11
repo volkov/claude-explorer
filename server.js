@@ -1,7 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { listProjects, listSessions, parseTranscript } = require('./parser');
+const { listProjects, listSessions, parseTranscript, isSessionActive } = require('./parser');
 
 const PORT = process.env.PORT || 3939;
 
@@ -42,6 +42,17 @@ async function handleRequest(req, res) {
     try {
       const sessions = await listSessions(sessionsMatch[1]);
       sendJSON(res, sessions);
+    } catch (e) {
+      sendJSON(res, { error: e.message }, 500);
+    }
+    return;
+  }
+
+  const statusMatch = pathname.match(/^\/api\/status\/([^/]+)\/([^/]+)$/);
+  if (statusMatch) {
+    try {
+      const active = await isSessionActive(statusMatch[1], statusMatch[2]);
+      sendJSON(res, { isActive: active });
     } catch (e) {
       sendJSON(res, { error: e.message }, 500);
     }

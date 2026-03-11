@@ -306,6 +306,37 @@ a:hover { text-decoration: underline; }
 .md-content table { border-collapse: collapse; margin: 6px 0; }
 .md-content th, .md-content td { border: 1px solid var(--border); padding: 4px 8px; font-size: 13px; }
 
+/* Active indicator */
+.badge.active {
+  background: var(--accent-green);
+  color: #000;
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.active-banner {
+  background: #0f2a1a;
+  border: 1px solid var(--accent-green);
+  border-radius: var(--radius);
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--accent-green);
+}
+.active-banner .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  animation: pulse 2s ease-in-out infinite;
+}
+
 /* Loading */
 .loading { text-align: center; padding: 60px; color: var(--text-dim); }
 .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite; }
@@ -389,6 +420,7 @@ async function api(path) {
 
 // Views
 async function renderProjectList() {
+  stopActivePolling();
   breadcrumb.innerHTML = '';
   app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
 
@@ -425,6 +457,7 @@ async function renderProjectList() {
 }
 
 async function renderSessionList(projectDir) {
+  stopActivePolling();
   const decoded = decodeURIComponent(projectDir);
   const name = humanName(decoded);
   breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span>${esc(name)}`;
@@ -442,10 +475,11 @@ async function renderSessionList(projectDir) {
   for (const s of sessions) {
     const date = new Date(s.timestamp).toLocaleString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     const size = (s.fileSize / 1024).toFixed(0) + ' KB';
+    const activeBadge = s.isActive ? '<span class="badge active">● Active</span>' : '';
     const badge = s.subagentCount > 0 ? `<span class="badge">${s.subagentCount} agents</span>` : '<span class="badge empty"></span>';
     html += `
       <div class="session-row" onclick="location.hash='#/session/${encodeURIComponent(decoded)}/${s.sessionId}'">
-        <span class="slug">${esc(s.slug || s.sessionId.slice(0, 8))}</span>
+        <span class="slug">${esc(s.slug || s.sessionId.slice(0, 8))} ${activeBadge}</span>
         <span class="date">${date}</span>
         <span class="size">${size}</span>
         ${badge}
@@ -462,7 +496,17 @@ async function renderSessionList(projectDir) {
   });
 }
 
+let _activePollingInterval = null;
+
+function stopActivePolling() {
+  if (_activePollingInterval) {
+    clearInterval(_activePollingInterval);
+    _activePollingInterval = null;
+  }
+}
+
 async function renderTranscript(projectDir, sessionId) {
+  stopActivePolling();
   const decoded = decodeURIComponent(projectDir);
   const name = humanName(decoded);
   breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span><a href="#/project/${encodeURIComponent(decoded)}">${esc(name)}</a><span>/</span>Session`;
@@ -471,12 +515,16 @@ async function renderTranscript(projectDir, sessionId) {
   try {
     const data = await api(`/api/transcript/${encodeURIComponent(decoded)}/${sessionId}`);
     renderTranscriptData(data, decoded, sessionId);
+
+    // Start polling for active status
+    startActivePolling(decoded, sessionId);
   } catch (e) {
     app.innerHTML = `<div class="loading">Error loading transcript: ${esc(e.message)}</div>`;
   }
 }
 
 async function renderSubagent(projectDir, sessionId, agentId) {
+  stopActivePolling();
   const decoded = decodeURIComponent(projectDir);
   const name = humanName(decoded);
   breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span><a href="#/project/${encodeURIComponent(decoded)}">${esc(name)}</a><span>/</span><a href="#/session/${encodeURIComponent(decoded)}/${sessionId}">Session</a><span>/</span>Agent ${esc(agentId.slice(0, 7))}`;
@@ -511,6 +559,7 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
   }
 
   let html = '';
+  html += '<div id="activeBanner"></div>';
   if (bannerHtml) html += bannerHtml;
 
   // Session meta
@@ -700,6 +749,44 @@ window.expandResult = function(id, btn) {
     if (btn) btn.remove();
   }
 };
+
+function startActivePolling(projectDir, sessionId) {
+  let wasActive = false;
+
+  async function checkStatus() {
+    try {
+      const { isActive } = await api(`/api/status/${encodeURIComponent(projectDir)}/${sessionId}`);
+      const banner = document.getElementById('activeBanner');
+      if (banner) {
+        if (isActive) {
+          banner.innerHTML = '<div class="active-banner"><span class="dot"></span> Agent is actively working on this session</div>';
+        } else {
+          banner.innerHTML = '';
+        }
+      }
+      // If it was active and now it's not, reload the transcript to get final state
+      if (wasActive && !isActive) {
+        const hash = location.hash.slice(1) || '/';
+        const parts = hash.split('/').filter(Boolean);
+        if (parts[0] === 'session' && parts[1] && parts[2]) {
+          const data = await api(`/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`);
+          renderTranscriptData(data, projectDir, sessionId);
+        }
+      }
+      wasActive = isActive;
+
+      // Stop polling if inactive
+      if (!isActive) {
+        stopActivePolling();
+      }
+    } catch {}
+  }
+
+  // Check immediately
+  checkStatus();
+  // Then every 5 seconds
+  _activePollingInterval = setInterval(checkStatus, 5000);
+}
 </script>
 </body>
 </html>
