@@ -92,7 +92,7 @@ wait_for_port_free() {
 
 restart_process() {
   stop_process
-  wait_for_port_free "$APP_PORT"
+  wait_for_port_free "$APP_PORT" || true
   start_process
 }
 
