@@ -503,10 +503,12 @@ function stopActivePolling() {
     clearInterval(_activePollingInterval);
     _activePollingInterval = null;
   }
+  cleanupScrollTracking();
 }
 
 async function renderTranscript(projectDir, sessionId) {
   stopActivePolling();
+  cleanupScrollTracking();
   const decoded = decodeURIComponent(projectDir);
   const name = humanName(decoded);
   breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span><a href="#/project/${encodeURIComponent(decoded)}">${esc(name)}</a><span>/</span>Session`;
@@ -515,6 +517,14 @@ async function renderTranscript(projectDir, sessionId) {
   try {
     const data = await api(`/api/transcript/${encodeURIComponent(decoded)}/${sessionId}`);
     renderTranscriptData(data, decoded, sessionId);
+
+    // Check if active — if so, scroll to bottom immediately
+    try {
+      const { isActive } = await api(`/api/status/${encodeURIComponent(decoded)}/${sessionId}`);
+      if (isActive) {
+        scrollToBottom();
+      }
+    } catch {}
 
     // Start polling for active status
     startActivePolling(decoded, sessionId);
@@ -750,10 +760,42 @@ window.expandResult = function(id, btn) {
   }
 };
 
+// Track whether the user has manually scrolled away from the bottom
+let _userScrolledUp = false;
+let _scrollListener = null;
+
+function isNearBottom(threshold = 150) {
+  return (window.innerHeight + window.scrollY) >= (document.body.scrollHeight - threshold);
+}
+
+function scrollToBottom() {
+  window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+}
+
+function setupScrollTracking() {
+  _userScrolledUp = false;
+  if (_scrollListener) window.removeEventListener('scroll', _scrollListener);
+  _scrollListener = () => {
+    // If user scrolled back to bottom, re-enable auto-scroll
+    _userScrolledUp = !isNearBottom(200);
+  };
+  window.addEventListener('scroll', _scrollListener, { passive: true });
+}
+
+function cleanupScrollTracking() {
+  if (_scrollListener) {
+    window.removeEventListener('scroll', _scrollListener);
+    _scrollListener = null;
+  }
+  _userScrolledUp = false;
+}
+
 function startActivePolling(projectDir, sessionId) {
   let wasActive = false;
+  let isRefreshing = false;
 
   async function checkStatus() {
+    if (isRefreshing) return;
     try {
       const { isActive } = await api(`/api/status/${encodeURIComponent(projectDir)}/${sessionId}`);
       const banner = document.getElementById('activeBanner');
@@ -764,14 +806,40 @@ function startActivePolling(projectDir, sessionId) {
           banner.innerHTML = '';
         }
       }
-      // If it was active and now it's not, reload the transcript to get final state
+
+      // Refresh transcript while agent is active
+      if (isActive) {
+        const hash = location.hash.slice(1) || '/';
+        const parts = hash.split('/').filter(Boolean);
+        if (parts[0] === 'session' && parts[1] && parts[2]) {
+          isRefreshing = true;
+          try {
+            const data = await api(`/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`);
+            renderTranscriptData(data, projectDir, sessionId);
+            // Auto-scroll to bottom unless user manually scrolled up
+            if (!_userScrolledUp) {
+              scrollToBottom();
+            }
+          } finally {
+            isRefreshing = false;
+          }
+        }
+      }
+
+      // If it was active and now it's not, do a final reload
       if (wasActive && !isActive) {
         const hash = location.hash.slice(1) || '/';
         const parts = hash.split('/').filter(Boolean);
         if (parts[0] === 'session' && parts[1] && parts[2]) {
-          const data = await api(`/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`);
-          renderTranscriptData(data, projectDir, sessionId);
+          isRefreshing = true;
+          try {
+            const data = await api(`/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`);
+            renderTranscriptData(data, projectDir, sessionId);
+          } finally {
+            isRefreshing = false;
+          }
         }
+        cleanupScrollTracking();
       }
       wasActive = isActive;
 
@@ -781,6 +849,9 @@ function startActivePolling(projectDir, sessionId) {
       }
     } catch {}
   }
+
+  // Set up scroll tracking for auto-scroll behavior
+  setupScrollTracking();
 
   // Check immediately
   checkStatus();

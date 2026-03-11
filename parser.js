@@ -5,15 +5,18 @@ const readline = require('readline');
 const CLAUDE_DIR = path.join(require('os').homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 
-// Simple LRU cache
+// Simple LRU cache with mtime tracking
 const cache = new Map();
+const cacheMtime = new Map(); // key -> mtimeMs at cache time
 const CACHE_MAX = 20;
-function cacheSet(key, value) {
+function cacheSet(key, value, mtimeMs) {
   if (cache.size >= CACHE_MAX) {
     const first = cache.keys().next().value;
     cache.delete(first);
+    cacheMtime.delete(first);
   }
   cache.set(key, value);
+  if (mtimeMs) cacheMtime.set(key, mtimeMs);
 }
 
 const ACTIVE_THRESHOLD_MS = 30000; // 30 seconds
@@ -132,7 +135,6 @@ async function getSessionMeta(filePath) {
 
 async function parseTranscript(projectDir, sessionId, agentId) {
   const cacheKey = `${projectDir}/${sessionId}/${agentId || 'main'}`;
-  if (cache.has(cacheKey)) return cache.get(cacheKey);
 
   let filePath;
   if (agentId) {
@@ -141,10 +143,16 @@ async function parseTranscript(projectDir, sessionId, agentId) {
     filePath = path.join(PROJECTS_DIR, projectDir, `${sessionId}.jsonl`);
   }
 
+  let stat;
   try {
-    await fs.promises.access(filePath);
+    stat = await fs.promises.stat(filePath);
   } catch {
     return null;
+  }
+
+  // Use cache only if file hasn't been modified since last parse
+  if (cache.has(cacheKey) && cacheMtime.has(cacheKey) && cacheMtime.get(cacheKey) >= stat.mtimeMs) {
+    return cache.get(cacheKey);
   }
 
   const messages = [];
@@ -316,7 +324,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         agentId: agentId || null,
       };
 
-      cacheSet(cacheKey, result);
+      cacheSet(cacheKey, result, stat.mtimeMs);
       resolve(result);
     });
 
