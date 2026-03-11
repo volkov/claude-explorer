@@ -793,11 +793,12 @@ function cleanupScrollTracking() {
 function startActivePolling(projectDir, sessionId) {
   let wasActive = false;
   let isRefreshing = false;
+  let lastMtimeMs = 0;
 
   async function checkStatus() {
     if (isRefreshing) return;
     try {
-      const { isActive } = await api(`/api/status/${encodeURIComponent(projectDir)}/${sessionId}`);
+      const { isActive, mtimeMs } = await api(`/api/status/${encodeURIComponent(projectDir)}/${sessionId}`);
       const banner = document.getElementById('activeBanner');
       if (banner) {
         if (isActive) {
@@ -807,8 +808,8 @@ function startActivePolling(projectDir, sessionId) {
         }
       }
 
-      // Refresh transcript while agent is active
-      if (isActive) {
+      // Refresh transcript while agent is active, but only if file actually changed
+      if (isActive && mtimeMs > lastMtimeMs) {
         const hash = location.hash.slice(1) || '/';
         const parts = hash.split('/').filter(Boolean);
         if (parts[0] === 'session' && parts[1] && parts[2]) {
@@ -816,6 +817,7 @@ function startActivePolling(projectDir, sessionId) {
           try {
             const data = await api(`/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`);
             renderTranscriptData(data, projectDir, sessionId);
+            lastMtimeMs = mtimeMs;
             // Auto-scroll to bottom unless user manually scrolled up
             if (!_userScrolledUp) {
               scrollToBottom();
@@ -835,6 +837,7 @@ function startActivePolling(projectDir, sessionId) {
           try {
             const data = await api(`/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`);
             renderTranscriptData(data, projectDir, sessionId);
+            lastMtimeMs = mtimeMs;
           } finally {
             isRefreshing = false;
           }

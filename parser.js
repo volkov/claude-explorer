@@ -347,4 +347,22 @@ async function isSessionActive(projectDir, sessionId, agentId) {
   }
 }
 
-module.exports = { listProjects, listSessions, parseTranscript, isSessionActive };
+async function getSessionStatus(projectDir, sessionId, agentId) {
+  let filePath;
+  if (agentId) {
+    filePath = path.join(PROJECTS_DIR, projectDir, sessionId, 'subagents', `agent-${agentId}.jsonl`);
+  } else {
+    filePath = path.join(PROJECTS_DIR, projectDir, `${sessionId}.jsonl`);
+  }
+  try {
+    const stat = await fs.promises.stat(filePath);
+    return {
+      isActive: (Date.now() - stat.mtimeMs) < ACTIVE_THRESHOLD_MS,
+      mtimeMs: stat.mtimeMs,
+    };
+  } catch {
+    return { isActive: false, mtimeMs: 0 };
+  }
+}
+
+module.exports = { listProjects, listSessions, parseTranscript, isSessionActive, getSessionStatus };
