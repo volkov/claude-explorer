@@ -16,6 +16,8 @@ function cacheSet(key, value) {
   cache.set(key, value);
 }
 
+const ACTIVE_THRESHOLD_MS = 30000; // 30 seconds
+
 function humanProjectName(dirName) {
   // -Users-serg-v-some-project -> some-project
   // The home dir is known, so strip it precisely
@@ -82,6 +84,7 @@ async function listSessions(projectDir) {
     } catch {}
 
     const stat = await fs.promises.stat(filePath);
+    const isActive = (Date.now() - stat.mtimeMs) < ACTIVE_THRESHOLD_MS;
 
     sessions.push({
       sessionId,
@@ -93,6 +96,7 @@ async function listSessions(projectDir) {
       gitBranch: meta.gitBranch,
       subagentCount,
       fileSize: stat.size,
+      isActive,
     });
   }
 
@@ -320,4 +324,19 @@ async function parseTranscript(projectDir, sessionId, agentId) {
   });
 }
 
-module.exports = { listProjects, listSessions, parseTranscript };
+async function isSessionActive(projectDir, sessionId, agentId) {
+  let filePath;
+  if (agentId) {
+    filePath = path.join(PROJECTS_DIR, projectDir, sessionId, 'subagents', `agent-${agentId}.jsonl`);
+  } else {
+    filePath = path.join(PROJECTS_DIR, projectDir, `${sessionId}.jsonl`);
+  }
+  try {
+    const stat = await fs.promises.stat(filePath);
+    return (Date.now() - stat.mtimeMs) < ACTIVE_THRESHOLD_MS;
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { listProjects, listSessions, parseTranscript, isSessionActive };
