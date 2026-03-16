@@ -88,6 +88,15 @@ async function handleRequest(req, res) {
 }
 
 const server = http.createServer(handleRequest);
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`Error: port ${PORT} is already in use. Exiting.`);
+    process.exit(1);
+  }
+  throw err;
+});
+
 server.listen(PORT, () => {
   console.log(`Claude Transcript Viewer running at http://localhost:${PORT}`);
 });

@@ -74,7 +74,26 @@ stop_process() {
   fi
 }
 
-# Wait until the port is free (up to 10 seconds)
+# Kill whatever process is listening on the given port
+kill_port_holder() {
+  local port="$1"
+  local pids
+  pids=$(lsof -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    log "Killing process(es) holding port $port: $pids"
+    echo "$pids" | xargs kill 2>/dev/null || true
+    sleep 1
+    # Force-kill any survivors
+    pids=$(lsof -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+      log "Force-killing process(es) on port $port: $pids"
+      echo "$pids" | xargs kill -9 2>/dev/null || true
+      sleep 0.5
+    fi
+  fi
+}
+
+# Wait until the port is free (up to 10 seconds), then force-kill if needed
 wait_for_port_free() {
   local port="$1"
   local max_attempts=20
@@ -82,8 +101,9 @@ wait_for_port_free() {
   while lsof -iTCP:"$port" -sTCP:LISTEN -t &>/dev/null; do
     attempt=$((attempt + 1))
     if [ "$attempt" -ge "$max_attempts" ]; then
-      log "Warning: port $port still in use after ${max_attempts}x0.5s, proceeding anyway"
-      return 1
+      log "Port $port still in use after ${max_attempts}x0.5s, killing port holder"
+      kill_port_holder "$port"
+      return 0
     fi
     sleep 0.5
   done
@@ -125,7 +145,8 @@ while true; do
   # Check if child is still alive; restart if crashed
   if [ -n "$CHILD_PID" ] && ! kill -0 "$CHILD_PID" 2>/dev/null; then
     log "Process (PID $CHILD_PID) exited unexpectedly, restarting..."
-    start_process
+    CHILD_PID=""
+    restart_process
     continue
   fi
 
