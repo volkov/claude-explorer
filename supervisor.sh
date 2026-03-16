@@ -41,11 +41,74 @@ if [ -z "$BRANCH" ]; then
 fi
 REMOTE="origin"
 
+# ── Lockfile — prevent multiple supervisor instances ─────────────────
+LOCKFILE="${TMPDIR:-/tmp}/supervisor-${PORT:-3939}.lock"
+
+acquire_lock() {
+  if [ -f "$LOCKFILE" ]; then
+    local old_pid
+    old_pid=$(cat "$LOCKFILE" 2>/dev/null || true)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+      echo "Error: another supervisor is already running (PID $old_pid, lockfile $LOCKFILE)" >&2
+      exit 1
+    fi
+    # Stale lockfile — previous supervisor crashed without cleanup
+    rm -f "$LOCKFILE"
+  fi
+  echo $$ > "$LOCKFILE"
+}
+
+release_lock() {
+  rm -f "$LOCKFILE"
+}
+
+acquire_lock
+
 # ── Helpers ───────────────────────────────────────────────────────────
 log() { echo "[supervisor $(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 
 CHILD_PID=""
 APP_PORT="${PORT:-3939}"
+
+# ── Circuit breaker — prevent infinite rapid restarts ────────────────
+MAX_RAPID_RESTARTS=5         # max consecutive crashes before cooldown
+RAPID_RESTART_WINDOW=120     # seconds — crashes within this window count as "rapid"
+COOLDOWN_SECONDS=60          # how long to wait after hitting the limit
+crash_timestamps=""          # space-separated epoch timestamps of recent crashes
+
+record_crash() {
+  local now
+  now=$(date +%s)
+  crash_timestamps="$crash_timestamps $now"
+
+  # Prune old timestamps outside the window
+  local cutoff=$((now - RAPID_RESTART_WINDOW))
+  local fresh=""
+  for ts in $crash_timestamps; do
+    if [ "$ts" -ge "$cutoff" ]; then
+      fresh="$fresh $ts"
+    fi
+  done
+  crash_timestamps="$fresh"
+}
+
+crash_count_in_window() {
+  local count=0
+  for _ in $crash_timestamps; do
+    count=$((count + 1))
+  done
+  echo "$count"
+}
+
+check_circuit_breaker() {
+  local count
+  count=$(crash_count_in_window)
+  if [ "$count" -ge "$MAX_RAPID_RESTARTS" ]; then
+    log "Circuit breaker: $count crashes in ${RAPID_RESTART_WINDOW}s (limit: $MAX_RAPID_RESTARTS). Cooling down for ${COOLDOWN_SECONDS}s..."
+    sleep "$COOLDOWN_SECONDS"
+    crash_timestamps=""  # reset after cooldown
+  fi
+}
 
 start_process() {
   log "Starting: $CMD"
@@ -106,6 +169,7 @@ restart_process() {
 cleanup() {
   log "Shutting down..."
   stop_process
+  release_lock
   exit 0
 }
 
@@ -131,8 +195,13 @@ while true; do
 
   # Check if child is still alive; restart if crashed
   if [ -n "$CHILD_PID" ] && ! kill -0 "$CHILD_PID" 2>/dev/null; then
-    log "Process (PID $CHILD_PID) exited unexpectedly, restarting..."
+    # Try to capture exit code for debugging
+    wait "$CHILD_PID" 2>/dev/null
+    exit_code=$?
+    log "Process (PID $CHILD_PID) exited unexpectedly (exit code: $exit_code), restarting..."
     CHILD_PID=""
+    record_crash
+    check_circuit_breaker
     restart_process
     continue
   fi
