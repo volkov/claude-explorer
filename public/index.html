@@ -357,6 +357,39 @@ a:hover { text-decoration: underline; }
 }
 .session-meta span { white-space: nowrap; }
 .session-meta strong { color: var(--text); }
+
+/* File path row */
+.file-path-row {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 16px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.file-path-row code {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--text);
+  word-break: break-all;
+  flex: 1;
+}
+.copy-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.15s, color 0.15s;
+}
+.copy-btn:hover { border-color: var(--accent); color: var(--accent); }
+.copy-btn.copied { border-color: var(--accent-green); color: var(--accent-green); }
 </style>
 </head>
 <body>
@@ -580,6 +613,14 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
   if (data.gitBranch) meta.push(`<span><strong>Branch:</strong> ${esc(data.gitBranch)}</span>`);
   if (meta.length) html += `<div class="session-meta">${meta.join('')}</div>`;
 
+  if (data.filePath) {
+    html += `<div class="file-path-row">
+      <strong>File:</strong>
+      <code>${esc(data.filePath)}</code>
+      <button class="copy-btn" onclick="copyPath(this, '${esc(data.filePath).replace(/'/g, "\\'")}')">Copy</button>
+    </div>`;
+  }
+
   html += '<div class="transcript">';
 
   for (const msg of data.messages) {
@@ -750,6 +791,27 @@ function humanName(dirName) {
 window.toggleEl = function(id) {
   const el = document.getElementById(id);
   if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+};
+
+window.copyPath = function(btn, path) {
+  navigator.clipboard.writeText(path).then(() => {
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  }).catch(() => {
+    // Fallback for non-HTTPS contexts
+    const ta = document.createElement('textarea');
+    ta.value = path;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  });
 };
 
 window.expandResult = function(id, btn) {
