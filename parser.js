@@ -319,6 +319,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
 
       const result = {
         ...sessionMeta,
+        filePath,
         messages,
         subagents,
         agentId: agentId || null,
