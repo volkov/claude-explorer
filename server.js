@@ -5,6 +5,15 @@ const { listProjects, listSessions, parseTranscript, isSessionActive, getSession
 
 const PORT = process.env.PORT || 3939;
 
+// ── Global error handlers — prevent silent crashes ──────────────────
+process.on('uncaughtException', (err) => {
+  console.error(`[server] Uncaught exception: ${err.stack || err}`);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error(`[server] Unhandled rejection: ${reason && reason.stack ? reason.stack : reason}`);
+});
+
 function sendJSON(res, data, status = 200) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
@@ -23,8 +32,15 @@ function sendHTML(res, filePath) {
 }
 
 async function handleRequest(req, res) {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const pathname = decodeURIComponent(url.pathname);
+  let url, pathname;
+  try {
+    url = new URL(req.url, `http://${req.headers.host}`);
+    pathname = decodeURIComponent(url.pathname);
+  } catch (e) {
+    res.writeHead(400);
+    res.end('Bad Request');
+    return;
+  }
 
   // API routes
   if (pathname === '/api/projects') {
@@ -88,6 +104,15 @@ async function handleRequest(req, res) {
 }
 
 const server = http.createServer(handleRequest);
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[server] Port ${PORT} is already in use. Exiting.`);
+    process.exit(1);
+  }
+  console.error(`[server] Server error: ${err.stack || err}`);
+});
+
 server.listen(PORT, () => {
   console.log(`Claude Transcript Viewer running at http://localhost:${PORT}`);
 });
