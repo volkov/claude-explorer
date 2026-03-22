@@ -204,6 +204,13 @@ a:hover { text-decoration: underline; }
 .tool-name.task, .tool-name.skill { background: #0c2d48; color: var(--accent); }
 .tool-name.other { background: #1a1a1a; color: var(--text-dim); }
 .tool-desc { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.tool-chevron {
+  color: var(--text-dimmer);
+  font-size: 10px;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.tool-chevron.expanded { transform: rotate(90deg); }
 .tool-input {
   padding: 8px 12px;
   border-top: 1px solid var(--border);
@@ -680,6 +687,7 @@ function renderToolUse(block, toolResultMap, projectDir, sessionId) {
     <span class="tool-icon">${icon}</span>
     <span class="tool-name ${nameClass}">${esc(block.name)}</span>
     <span class="tool-desc">${esc(desc)}</span>
+    <span class="tool-chevron" id="chev_${inputId}">&#9654;</span>
   </div>`;
 
   // Tool input (collapsed by default)
@@ -790,7 +798,12 @@ function humanName(dirName) {
 // Global helpers for onclick
 window.toggleEl = function(id) {
   const el = document.getElementById(id);
-  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+  if (el) {
+    const isHidden = el.style.display === 'none';
+    el.style.display = isHidden ? '' : 'none';
+    const chev = document.getElementById('chev_' + id);
+    if (chev) chev.classList.toggle('expanded', isHidden);
+  }
 };
 
 window.copyPath = function(btn, path) {
