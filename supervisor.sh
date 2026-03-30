@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# supervisor.sh — watches GitHub for new commits and restarts the app.
+# supervisor.sh — watches for HEAD changes and restarts the app.
 #
 # Usage:
 #   ./supervisor.sh                  # defaults: branch=current, interval=60s
@@ -8,15 +8,18 @@
 #
 # The script:
 #   1. Starts `node server.js` (or whatever CMD is set to).
-#   2. Every INTERVAL seconds runs `git fetch` and compares local HEAD
-#      with the remote tracking branch.
-#   3. If they differ — pulls changes and restarts the process.
+#   2. Every INTERVAL seconds checks if the local HEAD commit has changed
+#      (e.g. because pyphony orchestrator updated the working tree).
+#   3. If HEAD changed — restarts the process.
+#   4. Fallback: if HEAD hasn't changed for SV_FALLBACK_PULL_AFTER seconds,
+#      does a git pull --ff-only to catch any missed updates.
 #
 # Environment variables (all optional):
-#   PORT            — forwarded to the child process (default 3939)
-#   SV_BRANCH       — git branch to track (default: current branch)
-#   SV_INTERVAL     — poll interval in seconds (default: 60)
-#   SV_CMD          — command to run (default: "node server.js")
+#   PORT                  — forwarded to the child process (default 3939)
+#   SV_BRANCH             — git branch to track (default: current branch)
+#   SV_INTERVAL           — poll interval in seconds (default: 60)
+#   SV_CMD                — command to run (default: "node server.js")
+#   SV_FALLBACK_PULL_AFTER — seconds without HEAD change before fallback pull (default: 300)
 
 set -euo pipefail
 
@@ -24,6 +27,7 @@ set -euo pipefail
 BRANCH="${SV_BRANCH:-}"
 INTERVAL="${SV_INTERVAL:-60}"
 CMD="${SV_CMD:-node server.js}"
+FALLBACK_PULL_AFTER="${SV_FALLBACK_PULL_AFTER:-300}"
 
 # ── CLI args (override env) ───────────────────────────────────────────
 while getopts "b:i:c:" opt; do
@@ -186,7 +190,12 @@ log "Supervisor started"
 log "  Branch:   $BRANCH"
 log "  Remote:   $REMOTE"
 log "  Interval: ${INTERVAL}s"
+log "  Fallback pull after: ${FALLBACK_PULL_AFTER}s"
 log "  Command:  $CMD"
+
+KNOWN_HEAD=$(git rev-parse HEAD)
+LAST_CHANGE_TIME=$(date +%s)
+log "Initial HEAD: $KNOWN_HEAD"
 
 start_process
 
@@ -206,24 +215,45 @@ while true; do
     continue
   fi
 
-  # Fetch latest from remote
-  if ! git fetch "$REMOTE" "$BRANCH" 2>/dev/null; then
-    log "Warning: git fetch failed, will retry next cycle"
+  # Check if HEAD has changed (e.g. pyphony updated the working tree)
+  CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || true)
+  if [ -z "$CURRENT_HEAD" ]; then
+    log "Warning: failed to read HEAD, will retry next cycle"
     continue
   fi
 
-  LOCAL_HEAD=$(git rev-parse HEAD)
-  REMOTE_HEAD=$(git rev-parse "$REMOTE/$BRANCH")
+  if [ "$CURRENT_HEAD" != "$KNOWN_HEAD" ]; then
+    log "HEAD changed: $KNOWN_HEAD -> $CURRENT_HEAD"
+    KNOWN_HEAD="$CURRENT_HEAD"
+    LAST_CHANGE_TIME=$(date +%s)
+    log "Restarting process..."
+    restart_process
+    continue
+  fi
 
-  if [ "$LOCAL_HEAD" != "$REMOTE_HEAD" ]; then
-    log "New commits detected (local=$LOCAL_HEAD remote=$REMOTE_HEAD)"
-    log "Pulling changes..."
-
-    if git pull --ff-only "$REMOTE" "$BRANCH"; then
-      log "Pull successful, restarting process..."
-      restart_process
+  # Fallback: if HEAD hasn't changed for too long, try git pull
+  NOW=$(date +%s)
+  ELAPSED=$(( NOW - LAST_CHANGE_TIME ))
+  if [ "$ELAPSED" -ge "$FALLBACK_PULL_AFTER" ]; then
+    log "No HEAD change for ${ELAPSED}s (threshold: ${FALLBACK_PULL_AFTER}s), running fallback git pull..."
+    if git fetch "$REMOTE" "$BRANCH" 2>/dev/null && \
+       git pull --ff-only "$REMOTE" "$BRANCH" 2>/dev/null; then
+      NEW_HEAD=$(git rev-parse HEAD)
+      if [ "$NEW_HEAD" != "$KNOWN_HEAD" ]; then
+        log "Fallback pull found new commits: $KNOWN_HEAD -> $NEW_HEAD"
+        KNOWN_HEAD="$NEW_HEAD"
+        LAST_CHANGE_TIME=$(date +%s)
+        log "Restarting process..."
+        restart_process
+      else
+        # Reset timer even if no new commits, to avoid pulling every cycle
+        LAST_CHANGE_TIME=$(date +%s)
+        log "Fallback pull: already up to date"
+      fi
     else
-      log "Warning: git pull failed (merge conflict?), skipping restart"
+      log "Warning: fallback git pull failed, will retry next cycle"
+      # Reset timer to avoid hammering on every cycle
+      LAST_CHANGE_TIME=$(date +%s)
     fi
   fi
 done
