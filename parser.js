@@ -206,6 +206,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         model: obj.message?.model,
         isSidechain: obj.isSidechain,
         agentId: obj.agentId,
+        _raw: line,
       };
 
       // Also check toolUseResult for agentId mapping
