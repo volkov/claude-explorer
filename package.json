@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "scripts": {
     "start": "node server.js",
-    "supervisor": "./supervisor.sh"
+    "supervisor": "./supervisor.sh",
+    "service:install": "./service.sh install",
+    "service:uninstall": "./service.sh uninstall",
+    "service:status": "./service.sh status",
+    "service:logs": "./service.sh logs"
   }
 }
