@@ -4,10 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Claude Transcript Viewer</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+<link rel="stylesheet" id="hljs-theme" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.1/marked.min.js"></script>
 <style>
+/* Dark theme (default) */
 :root {
   --bg: #0d1117;
   --bg-surface: #161b22;
@@ -26,6 +27,93 @@
   --accent-orange: #d29922;
   --accent-red: #f85149;
   --radius: 8px;
+  --bg-user-role: #0c3d6a;
+  --bg-assistant-role: #1a2c1a;
+  --bg-thinking-border: #2d1f47;
+  --bg-subagent: #0c2d48;
+  --bg-subagent-hover: #0e3a5e;
+  --bg-active-banner: #0f2a1a;
+  --bg-inline-code: #282e37;
+  --bg-modal-overlay: rgba(0,0,0,0.7);
+  --badge-text: #000;
+  --tool-bg-bash: #1a2b1a;
+  --tool-bg-rw: #2a2510;
+  --tool-bg-search: #1a1a2e;
+  --tool-bg-task: #0c2d48;
+  --tool-bg-other: #1a1a1a;
+  color-scheme: dark;
+}
+
+/* Light theme variables */
+[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-surface: #f6f8fa;
+  --bg-surface2: #eaeef2;
+  --bg-user: #ddf4ff;
+  --bg-thinking: #f5f0ff;
+  --bg-tool: #f6f8fa;
+  --bg-tool-result: #f0f3f6;
+  --text: #1f2328;
+  --text-dim: #656d76;
+  --text-dimmer: #8b949e;
+  --border: #d0d7de;
+  --accent: #0969da;
+  --accent-green: #1a7f37;
+  --accent-purple: #8250df;
+  --accent-orange: #9a6700;
+  --accent-red: #cf222e;
+  --bg-user-role: #b6e3ff;
+  --bg-assistant-role: #aff5b4;
+  --bg-thinking-border: #d8b4fe;
+  --bg-subagent: #ddf4ff;
+  --bg-subagent-hover: #b6e3ff;
+  --bg-active-banner: #dcffe4;
+  --bg-inline-code: #eef1f6;
+  --bg-modal-overlay: rgba(0,0,0,0.4);
+  --badge-text: #fff;
+  --tool-bg-bash: #dcffe4;
+  --tool-bg-rw: #fff8c5;
+  --tool-bg-search: #f5f0ff;
+  --tool-bg-task: #ddf4ff;
+  --tool-bg-other: #f6f8fa;
+  color-scheme: light;
+}
+
+/* System theme — follow OS preference */
+@media (prefers-color-scheme: light) {
+  [data-theme="system"] {
+    --bg: #ffffff;
+    --bg-surface: #f6f8fa;
+    --bg-surface2: #eaeef2;
+    --bg-user: #ddf4ff;
+    --bg-thinking: #f5f0ff;
+    --bg-tool: #f6f8fa;
+    --bg-tool-result: #f0f3f6;
+    --text: #1f2328;
+    --text-dim: #656d76;
+    --text-dimmer: #8b949e;
+    --border: #d0d7de;
+    --accent: #0969da;
+    --accent-green: #1a7f37;
+    --accent-purple: #8250df;
+    --accent-orange: #9a6700;
+    --accent-red: #cf222e;
+    --bg-user-role: #b6e3ff;
+    --bg-assistant-role: #aff5b4;
+    --bg-thinking-border: #d8b4fe;
+    --bg-subagent: #ddf4ff;
+    --bg-subagent-hover: #b6e3ff;
+    --bg-active-banner: #dcffe4;
+    --bg-inline-code: #eef1f6;
+    --bg-modal-overlay: rgba(0,0,0,0.4);
+    --badge-text: #fff;
+    --tool-bg-bash: #dcffe4;
+    --tool-bg-rw: #fff8c5;
+    --tool-bg-search: #f5f0ff;
+    --tool-bg-task: #ddf4ff;
+    --tool-bg-other: #f6f8fa;
+    color-scheme: light;
+  }
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -105,7 +193,7 @@ a:hover { text-decoration: underline; }
 .session-row .size { color: var(--text-dimmer); font-size: 12px; text-align: right; }
 .session-row .badge {
   background: var(--accent);
-  color: #000;
+  color: var(--badge-text);
   font-size: 11px;
   font-weight: 600;
   padding: 1px 6px;
@@ -146,15 +234,15 @@ a:hover { text-decoration: underline; }
   padding: 1px 6px;
   border-radius: 4px;
 }
-.msg-header .role.user { background: #0c3d6a; color: var(--accent); }
-.msg-header .role.assistant { background: #1a2c1a; color: var(--accent-green); }
+.msg-header .role.user { background: var(--bg-user-role); color: var(--accent); }
+.msg-header .role.assistant { background: var(--bg-assistant-role); color: var(--accent-green); }
 
 /* Thinking */
 .thinking-block {
   margin: 6px 0;
   border-radius: 6px;
   background: var(--bg-thinking);
-  border: 1px solid #2d1f47;
+  border: 1px solid var(--bg-thinking-border);
 }
 .thinking-block summary {
   padding: 6px 10px;
@@ -171,7 +259,7 @@ a:hover { text-decoration: underline; }
   color: var(--text-dim);
   max-height: 400px;
   overflow-y: auto;
-  border-top: 1px solid #2d1f47;
+  border-top: 1px solid var(--bg-thinking-border);
 }
 
 /* Tool use */
@@ -198,11 +286,11 @@ a:hover { text-decoration: underline; }
   border-radius: 4px;
   font-size: 11px;
 }
-.tool-name.bash { background: #1a2b1a; color: var(--accent-green); }
-.tool-name.read, .tool-name.write, .tool-name.edit { background: #2a2510; color: var(--accent-orange); }
-.tool-name.grep, .tool-name.glob { background: #1a1a2e; color: var(--accent-purple); }
-.tool-name.task, .tool-name.skill { background: #0c2d48; color: var(--accent); }
-.tool-name.other { background: #1a1a1a; color: var(--text-dim); }
+.tool-name.bash { background: var(--tool-bg-bash); color: var(--accent-green); }
+.tool-name.read, .tool-name.write, .tool-name.edit { background: var(--tool-bg-rw); color: var(--accent-orange); }
+.tool-name.grep, .tool-name.glob { background: var(--tool-bg-search); color: var(--accent-purple); }
+.tool-name.task, .tool-name.skill { background: var(--tool-bg-task); color: var(--accent); }
+.tool-name.other { background: var(--tool-bg-other); color: var(--text-dim); }
 .tool-desc { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .tool-chevron {
   color: var(--text-dimmer);
@@ -264,7 +352,7 @@ a:hover { text-decoration: underline; }
   gap: 4px;
   padding: 3px 10px;
   margin-top: 4px;
-  background: #0c2d48;
+  background: var(--bg-subagent);
   border: 1px solid var(--accent);
   border-radius: 4px;
   color: var(--accent);
@@ -273,7 +361,7 @@ a:hover { text-decoration: underline; }
   cursor: pointer;
   transition: background 0.15s;
 }
-.subagent-link:hover { background: #0e3a5e; text-decoration: none; }
+.subagent-link:hover { background: var(--bg-subagent-hover); text-decoration: none; }
 
 /* View JSON button */
 .view-json-btn {
@@ -294,7 +382,7 @@ a:hover { text-decoration: underline; }
 .json-modal-overlay {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.7);
+  background: var(--bg-modal-overlay);
   z-index: 1000;
   display: flex;
   align-items: center;
@@ -358,7 +446,7 @@ a:hover { text-decoration: underline; }
 
 /* Subagent banner */
 .subagent-banner {
-  background: #0c2d48;
+  background: var(--bg-subagent);
   border: 1px solid var(--accent);
   border-radius: var(--radius);
   padding: 10px 16px;
@@ -385,7 +473,7 @@ a:hover { text-decoration: underline; }
   font-size: 12px;
 }
 .md-content :not(pre) > code {
-  background: #282e37;
+  background: var(--bg-inline-code);
   padding: 1px 5px;
   border-radius: 4px;
 }
@@ -397,7 +485,7 @@ a:hover { text-decoration: underline; }
 /* Active indicator */
 .badge.active {
   background: var(--accent-green);
-  color: #000;
+  color: var(--badge-text);
   animation: pulse 2s ease-in-out infinite;
 }
 @keyframes pulse {
@@ -406,7 +494,7 @@ a:hover { text-decoration: underline; }
 }
 
 .active-banner {
-  background: #0f2a1a;
+  background: var(--bg-active-banner);
   border: 1px solid var(--accent-green);
   border-radius: var(--radius);
   padding: 10px 16px;
@@ -478,6 +566,47 @@ a:hover { text-decoration: underline; }
 }
 .copy-btn:hover { border-color: var(--accent); color: var(--accent); }
 .copy-btn.copied { border-color: var(--accent-green); color: var(--accent-green); }
+
+/* Theme toggle */
+.theme-toggle {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px;
+  flex-shrink: 0;
+}
+.theme-toggle button {
+  background: none;
+  border: none;
+  color: var(--text-dimmer);
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  transition: background 0.15s, color 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.theme-toggle button:hover {
+  color: var(--text-dim);
+}
+.theme-toggle button.active {
+  background: var(--bg-surface2);
+  color: var(--text);
+}
+.theme-toggle .theme-label {
+  font-size: 11px;
+  font-weight: 500;
+}
+@media (max-width: 600px) {
+  .theme-toggle .theme-label { display: none; }
+}
 </style>
 </head>
 <body>
@@ -486,6 +615,20 @@ a:hover { text-decoration: underline; }
   <div class="header-inner">
     <h1><a href="#/" style="color: var(--text);">Claude Transcripts</a></h1>
     <div id="breadcrumb" class="breadcrumb"></div>
+    <div class="theme-toggle" id="themeToggle">
+      <button data-theme="system" title="System theme" onclick="setTheme('system')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+        <span class="theme-label">System</span>
+      </button>
+      <button data-theme="light" title="Light theme" onclick="setTheme('light')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+        <span class="theme-label">Light</span>
+      </button>
+      <button data-theme="dark" title="Dark theme" onclick="setTheme('dark')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+        <span class="theme-label">Dark</span>
+      </button>
+    </div>
   </div>
 </div>
 
@@ -496,6 +639,64 @@ a:hover { text-decoration: underline; }
 </div>
 
 <script>
+// ---- Theme Management ----
+(function initTheme() {
+  const saved = localStorage.getItem('theme') || 'system';
+  document.documentElement.setAttribute('data-theme', saved);
+  updateHljsTheme(getEffectiveTheme(saved));
+  // Mark the active button as soon as DOM is ready
+  requestAnimationFrame(() => updateThemeButtons(saved));
+})();
+
+function getEffectiveTheme(theme) {
+  if (theme === 'system') {
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  return theme;
+}
+
+function updateHljsTheme(effectiveTheme) {
+  const link = document.getElementById('hljs-theme');
+  if (!link) return;
+  const isDark = effectiveTheme === 'dark';
+  const newHref = isDark
+    ? 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css'
+    : 'https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css';
+  if (link.href !== newHref) link.href = newHref;
+}
+
+function updateThemeButtons(theme) {
+  const toggle = document.getElementById('themeToggle');
+  if (!toggle) return;
+  toggle.querySelectorAll('button').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-theme') === theme);
+  });
+}
+
+window.setTheme = function(theme) {
+  localStorage.setItem('theme', theme);
+  document.documentElement.setAttribute('data-theme', theme);
+  updateHljsTheme(getEffectiveTheme(theme));
+  updateThemeButtons(theme);
+  // Re-highlight all code blocks with the new theme
+  document.querySelectorAll('.md-content pre code').forEach(el => {
+    try { hljs.highlightElement(el); } catch {}
+  });
+};
+
+// Listen for OS theme changes (only matters when theme is "system")
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+  const current = localStorage.getItem('theme') || 'system';
+  if (current === 'system') {
+    updateHljsTheme(getEffectiveTheme('system'));
+    // Re-highlight code blocks
+    document.querySelectorAll('.md-content pre code').forEach(el => {
+      try { hljs.highlightElement(el); } catch {}
+    });
+  }
+});
+// ---- End Theme Management ----
+
 const $ = document.getElementById.bind(document);
 const app = $('app');
 const breadcrumb = $('breadcrumb');
