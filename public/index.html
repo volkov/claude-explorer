@@ -251,6 +251,13 @@ a:hover { text-decoration: underline; }
   color: var(--accent-purple);
   user-select: none;
 }
+.thinking-block-empty .thinking-label {
+  display: block;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--accent-purple);
+  user-select: none;
+}
 .thinking-block .thinking-content {
   padding: 8px 12px;
   font-size: 13px;
@@ -946,10 +953,17 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
 
       for (const block of msg.blocks) {
         if (block.type === 'thinking') {
-          html += `<details class="thinking-block">
-            <summary>Thinking...</summary>
-            <div class="thinking-content">${esc(block.content || '')}</div>
-          </details>`;
+          const thinkingContent = (block.content || '').trim();
+          if (thinkingContent) {
+            html += `<details class="thinking-block">
+              <summary>Thinking...</summary>
+              <div class="thinking-content">${esc(block.content)}</div>
+            </details>`;
+          } else {
+            html += `<div class="thinking-block thinking-block-empty">
+              <span class="thinking-label">Thinking...</span>
+            </div>`;
+          }
         } else if (block.type === 'text') {
           html += `<div class="md-content">${renderMarkdown(block.content)}</div>`;
         } else if (block.type === 'tool_use') {
