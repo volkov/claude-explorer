@@ -352,6 +352,143 @@ a:hover { text-decoration: underline; }
   cursor: pointer;
 }
 
+/* TodoWrite custom display */
+.tool-name.todowrite { background: var(--tool-bg-task); color: var(--accent); }
+.todo-list {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-tool);
+}
+.todo-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.todo-checkbox {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 2px;
+  border: 1.5px solid var(--text-dimmer);
+  background: transparent;
+  color: transparent;
+  transition: background 0.15s, border-color 0.15s;
+  position: relative;
+}
+.todo-item.completed .todo-checkbox {
+  background: var(--accent-green);
+  border-color: var(--accent-green);
+  color: var(--badge-text);
+}
+.todo-item.completed .todo-checkbox::after {
+  content: '✓';
+  color: var(--badge-text);
+  font-size: 11px;
+  line-height: 1;
+}
+.todo-item.in-progress .todo-checkbox {
+  background: var(--accent);
+  border-color: var(--accent);
+  animation: todo-pulse 1.6s ease-in-out infinite;
+}
+.todo-item.in-progress .todo-checkbox::after {
+  content: '';
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--badge-text);
+}
+.todo-content {
+  flex: 1;
+  word-break: break-word;
+}
+.todo-item.completed .todo-content {
+  text-decoration: line-through;
+  color: var(--text-dim);
+}
+.todo-item.in-progress .todo-content {
+  color: var(--text);
+  font-weight: 600;
+}
+.todo-item.pending .todo-content {
+  color: var(--text-dim);
+}
+.todo-item .todo-active-form {
+  display: block;
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 500;
+  margin-top: 2px;
+  font-style: italic;
+}
+.todo-item.changed {
+  position: relative;
+}
+.todo-item.changed::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--accent-orange);
+  border-radius: 2px;
+}
+@keyframes todo-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent); opacity: 1; }
+  50% { box-shadow: 0 0 0 4px rgba(88, 166, 255, 0); opacity: 0.65; }
+}
+
+.todo-progress {
+  padding: 6px 14px 8px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-tool);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.todo-progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--bg);
+  border-radius: 2px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.todo-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-green) 0%, var(--accent) 100%);
+  transition: width 0.3s ease;
+}
+.todo-progress-stats {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.todo-progress-stats .stat-done { color: var(--accent-green); font-weight: 600; }
+.todo-progress-stats .stat-active { color: var(--accent); font-weight: 600; }
+.todo-progress-stats .stat-todo { color: var(--text-dim); }
+
+.todo-empty {
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--text-dimmer);
+  font-style: italic;
+}
+
 /* Subagent link */
 .subagent-link {
   display: inline-flex;
@@ -984,6 +1121,11 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
 }
 
 function renderToolUse(block, toolResultMap, projectDir, sessionId) {
+  // Special-case TodoWrite — render a beautiful checklist instead of raw JSON
+  if ((block.name || '').toLowerCase() === 'todowrite') {
+    return renderTodoWrite(block, toolResultMap);
+  }
+
   const nameClass = getToolClass(block.name);
   const icon = getToolIcon(block.name);
   const desc = getToolDesc(block);
@@ -1028,6 +1170,91 @@ function renderToolUse(block, toolResultMap, projectDir, sessionId) {
   return html;
 }
 
+function renderTodoWrite(block, toolResultMap) {
+  const input = block.input || {};
+  const todos = Array.isArray(input.todos) ? input.todos : [];
+  const result = toolResultMap.get(block.id);
+
+  // Prefer structured oldTodos/newTodos from the result for diff highlighting
+  const oldTodos = result && result.todos ? (result.todos.oldTodos || []) : [];
+  const newTodos = (result && result.todos && result.todos.newTodos && result.todos.newTodos.length)
+    ? result.todos.newTodos
+    : todos;
+
+  // Build a map of old status by content to detect changes
+  const oldByContent = new Map();
+  for (const t of oldTodos) {
+    if (t && t.content) oldByContent.set(t.content, t.status);
+  }
+
+  const counts = { pending: 0, in_progress: 0, completed: 0 };
+  for (const t of newTodos) {
+    const s = (t && t.status) || 'pending';
+    if (counts[s] !== undefined) counts[s]++;
+  }
+  const total = newTodos.length;
+  const donePct = total > 0 ? Math.round((counts.completed / total) * 100) : 0;
+
+  // Find the active item to display in the header
+  const active = newTodos.find(t => t && t.status === 'in_progress');
+  const headerDesc = active
+    ? (active.activeForm || active.content || '')
+    : (counts.completed === total && total > 0
+        ? 'All tasks completed'
+        : `${total} task${total === 1 ? '' : 's'}`);
+
+  const inputId = 'ti_' + (block.id || '').replace(/[^a-z0-9]/gi, '').slice(0, 12) + Math.random().toString(36).slice(2, 6);
+
+  let html = `<div class="tool-block todo-write-block" id="tool-${esc(block.id || '')}">`;
+  html += `<div class="tool-header" onclick="toggleEl('${inputId}')">
+    <span class="tool-icon">\u{1F4CB}</span>
+    <span class="tool-name todowrite">TodoWrite</span>
+    <span class="tool-desc">${esc(headerDesc)}</span>
+    <span class="tool-chevron" id="chev_${inputId}">&#9654;</span>
+  </div>`;
+
+  if (newTodos.length === 0) {
+    html += `<div class="todo-empty">(empty todo list)</div>`;
+  } else {
+    html += `<div class="todo-list">`;
+    for (const t of newTodos) {
+      if (!t) continue;
+      const status = t.status || 'pending';
+      const statusClass = status === 'in_progress' ? 'in-progress' : status;
+      const oldStatus = oldByContent.get(t.content);
+      const changed = oldByContent.size > 0 && oldStatus !== status;
+      const changedCls = changed ? ' changed' : '';
+      const content = t.content || '';
+      const activeForm = (status === 'in_progress' && t.activeForm && t.activeForm !== content)
+        ? `<span class="todo-active-form">${esc(t.activeForm)}\u2026</span>`
+        : '';
+      html += `<div class="todo-item ${statusClass}${changedCls}">
+        <span class="todo-checkbox" aria-hidden="true"></span>
+        <span class="todo-content">${esc(content)}${activeForm}</span>
+      </div>`;
+    }
+    html += `</div>`;
+
+    // Progress footer
+    const stats = [];
+    if (counts.completed) stats.push(`<span class="stat-done">${counts.completed} done</span>`);
+    if (counts.in_progress) stats.push(`<span class="stat-active">${counts.in_progress} in progress</span>`);
+    if (counts.pending) stats.push(`<span class="stat-todo">${counts.pending} pending</span>`);
+
+    html += `<div class="todo-progress">
+      <div class="todo-progress-bar"><div class="todo-progress-fill" style="width:${donePct}%"></div></div>
+      <span class="todo-progress-stats">${stats.join(' \u00B7 ')}</span>
+    </div>`;
+  }
+
+  // Collapsed raw JSON view (toggled by clicking header)
+  const inputStr = JSON.stringify(input, null, 2);
+  html += `<div class="tool-input" id="${inputId}" style="display:none">${esc(inputStr)}</div>`;
+
+  html += `</div>`;
+  return html;
+}
+
 function getToolClass(name) {
   const n = (name || '').toLowerCase();
   if (n === 'bash') return 'bash';
@@ -1047,7 +1274,7 @@ function getToolIcon(name) {
     bash: '\u25b6', read: '\ud83d\udcc4', write: '\u270f\ufe0f', edit: '\u270f\ufe0f',
     grep: '\ud83d\udd0d', glob: '\ud83d\udcc1', task: '\ud83d\udd00', skill: '\u26a1',
     askuserquestion: '\u2753', enterplanmode: '\ud83d\udccb', exitplanmode: '\u2705',
-    webfetch: '\ud83c\udf10', websearch: '\ud83c\udf10',
+    webfetch: '\ud83c\udf10', websearch: '\ud83c\udf10', todowrite: '\ud83d\udccb',
   };
   return icons[n] || '\u2699\ufe0f';
 }
