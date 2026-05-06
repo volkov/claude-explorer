@@ -260,11 +260,21 @@ async function parseTranscript(projectDir, sessionId, agentId) {
               } else if (Array.isArray(block.content)) {
                 resultText = block.content.map(c => c.text || '').join('\n');
               }
-              msg.toolResults.push({
+              const tr = {
                 toolUseId: block.tool_use_id,
                 content: resultText,
                 isError: block.is_error || false,
-              });
+              };
+              // Preserve structured tool result data (e.g. TodoWrite oldTodos/newTodos)
+              if (obj.toolUseResult && typeof obj.toolUseResult === 'object') {
+                if (obj.toolUseResult.oldTodos || obj.toolUseResult.newTodos) {
+                  tr.todos = {
+                    oldTodos: obj.toolUseResult.oldTodos || [],
+                    newTodos: obj.toolUseResult.newTodos || [],
+                  };
+                }
+              }
+              msg.toolResults.push(tr);
             } else if (block.type === 'text') {
               msg.text = (msg.text || '') + block.text;
             }
