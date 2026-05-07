@@ -87,7 +87,11 @@ async function listSessions(projectDir) {
     } catch {}
 
     const stat = await fs.promises.stat(filePath);
-    const isActive = (Date.now() - stat.mtimeMs) < ACTIVE_THRESHOLD_MS;
+    // A forked skill writes only to its agent-*.jsonl while the parent stays
+    // idle; consider those subagent mtimes when deciding if the session is
+    // still actively running.
+    const maxMtime = await getMaxMtimeForSession(projectDir, sessionId);
+    const isActive = (Date.now() - maxMtime) < ACTIVE_THRESHOLD_MS;
 
     sessions.push({
       sessionId,
@@ -133,6 +137,49 @@ async function getSessionMeta(filePath) {
   });
 }
 
+// Read the first non-empty line of a JSONL file (used to peek at a subagent's
+// first message timestamp without parsing the whole file).
+function readFirstLine(filePath) {
+  return new Promise((resolve) => {
+    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: stream });
+    let firstLine = null;
+    rl.on('line', (line) => {
+      if (firstLine !== null) return;
+      firstLine = line;
+      rl.close();
+      stream.destroy();
+    });
+    rl.on('close', () => resolve(firstLine));
+    rl.on('error', () => resolve(null));
+  });
+}
+
+// Compute the max mtime across the parent transcript file and all subagent
+// JSONL files in its subagents/ directory. Used to invalidate cache and for
+// active-polling status when forked skills/subagents update their own files
+// without touching the parent.
+async function getMaxMtimeForSession(projectDir, sessionId) {
+  let maxMtime = 0;
+  const parentPath = path.join(PROJECTS_DIR, projectDir, `${sessionId}.jsonl`);
+  try {
+    const stat = await fs.promises.stat(parentPath);
+    if (stat.mtimeMs > maxMtime) maxMtime = stat.mtimeMs;
+  } catch {}
+  const subagentsDir = path.join(PROJECTS_DIR, projectDir, sessionId, 'subagents');
+  try {
+    const files = await fs.promises.readdir(subagentsDir);
+    for (const f of files) {
+      if (!f.endsWith('.jsonl')) continue;
+      try {
+        const stat = await fs.promises.stat(path.join(subagentsDir, f));
+        if (stat.mtimeMs > maxMtime) maxMtime = stat.mtimeMs;
+      } catch {}
+    }
+  } catch {}
+  return maxMtime;
+}
+
 async function parseTranscript(projectDir, sessionId, agentId) {
   const cacheKey = `${projectDir}/${sessionId}/${agentId || 'main'}`;
 
@@ -150,8 +197,13 @@ async function parseTranscript(projectDir, sessionId, agentId) {
     return null;
   }
 
-  // Use cache only if file hasn't been modified since last parse
-  if (cache.has(cacheKey) && cacheMtime.has(cacheKey) && cacheMtime.get(cacheKey) >= stat.mtimeMs) {
+  // For the parent transcript, also consider subagent file mtimes — a forked
+  // skill writes to its agent-*.jsonl while the parent stays idle, so we must
+  // re-parse to surface fresh subagent links even if the parent didn't change.
+  const cacheMtimeRef = agentId ? stat.mtimeMs : await getMaxMtimeForSession(projectDir, sessionId);
+
+  // Use cache only if nothing relevant has been modified since last parse
+  if (cache.has(cacheKey) && cacheMtime.has(cacheKey) && cacheMtime.get(cacheKey) >= cacheMtimeRef) {
     return cache.get(cacheKey);
   }
 
@@ -287,7 +339,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
       messages.push(msg);
     });
 
-    rl.on('close', () => {
+    rl.on('close', async () => {
       // List available subagents first (needed for link validation)
       const subagentsDir = path.join(PROJECTS_DIR, projectDir, sessionId, 'subagents');
       let subagents = [];
@@ -304,6 +356,25 @@ async function parseTranscript(projectDir, sessionId, agentId) {
           .filter(Boolean);
       } catch {}
 
+      // Read each subagent's first-message timestamp so we can fall back to
+      // timestamp-proximity matching for forked skills that haven't yet
+      // produced a tool_result (which is where the agentId normally arrives).
+      // Only needed when rendering the parent transcript.
+      const subagentFirstTs = new Map(); // agentId -> first message timestamp (ms)
+      if (!agentId) {
+        await Promise.all(subagents.map(async (sub) => {
+          try {
+            const subPath = path.join(subagentsDir, sub.filename);
+            const firstLine = await readFirstLine(subPath);
+            if (!firstLine) return;
+            const obj = JSON.parse(firstLine);
+            if (obj && obj.timestamp) {
+              subagentFirstTs.set(sub.agentId, new Date(obj.timestamp).getTime());
+            }
+          } catch {}
+        }));
+      }
+
       // Post-process: attach agentId links to tool_use blocks and tool_results
       // Only create links for agentIds that have corresponding files
       for (const [toolUseId, agId] of toolUseToAgent) {
@@ -312,6 +383,49 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         if (toolBlock) {
           toolBlock.agentId = agId;
           toolBlock.agentLink = `#/subagent/${projectDir}/${sessionId}/${agId}`;
+        }
+      }
+
+      // Fallback for in-flight forked skills (and any other context-isolated
+      // tool calls): the tool_result with `agentId` only arrives when the
+      // skill finishes, so during the run the parent transcript has no link.
+      // We can still discover the subagent by matching timestamps — its first
+      // message is written milliseconds after the Skill tool_use timestamp.
+      if (!agentId && subagentFirstTs.size > 0) {
+        const linkedAgentIds = new Set();
+        for (const block of toolUseBlocks.values()) {
+          if (block.agentId) linkedAgentIds.add(block.agentId);
+        }
+        // Walk messages in order so we associate each tool_use with the
+        // earliest unmatched subagent that started just after it.
+        for (const msg of messages) {
+          if (msg.type !== 'assistant' || !Array.isArray(msg.blocks)) continue;
+          if (!msg.timestamp) continue;
+          const blockTime = new Date(msg.timestamp).getTime();
+          if (!Number.isFinite(blockTime)) continue;
+          for (const block of msg.blocks) {
+            if (block.type !== 'tool_use') continue;
+            if (block.agentLink) continue;
+            const name = (block.name || '').toLowerCase();
+            // Only Skill / Task can spawn a subagent transcript.
+            if (name !== 'skill' && name !== 'task') continue;
+            let bestId = null;
+            let bestDelta = Infinity;
+            for (const [agId, firstTs] of subagentFirstTs) {
+              if (linkedAgentIds.has(agId)) continue;
+              if (!validAgentIds.has(agId)) continue;
+              const delta = firstTs - blockTime;
+              // Subagent must start AFTER the tool_use; allow up to 30 seconds
+              // for the skill to spin up before its first message is written.
+              if (delta < 0 || delta > 30000) continue;
+              if (delta < bestDelta) { bestDelta = delta; bestId = agId; }
+            }
+            if (bestId) {
+              block.agentId = bestId;
+              block.agentLink = `#/subagent/${projectDir}/${sessionId}/${bestId}`;
+              linkedAgentIds.add(bestId);
+            }
+          }
         }
       }
 
@@ -336,7 +450,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         agentId: agentId || null,
       };
 
-      cacheSet(cacheKey, result, stat.mtimeMs);
+      cacheSet(cacheKey, result, cacheMtimeRef);
       resolve(result);
     });
 
@@ -345,36 +459,44 @@ async function parseTranscript(projectDir, sessionId, agentId) {
 }
 
 async function isSessionActive(projectDir, sessionId, agentId) {
-  let filePath;
+  let mtimeMs = 0;
   if (agentId) {
-    filePath = path.join(PROJECTS_DIR, projectDir, sessionId, 'subagents', `agent-${agentId}.jsonl`);
+    const filePath = path.join(PROJECTS_DIR, projectDir, sessionId, 'subagents', `agent-${agentId}.jsonl`);
+    try {
+      const stat = await fs.promises.stat(filePath);
+      mtimeMs = stat.mtimeMs;
+    } catch {
+      return false;
+    }
   } else {
-    filePath = path.join(PROJECTS_DIR, projectDir, `${sessionId}.jsonl`);
+    // For the parent transcript, also count subagent file activity — a forked
+    // skill keeps the session "alive" even when the parent file is idle.
+    mtimeMs = await getMaxMtimeForSession(projectDir, sessionId);
+    if (!mtimeMs) return false;
   }
-  try {
-    const stat = await fs.promises.stat(filePath);
-    return (Date.now() - stat.mtimeMs) < ACTIVE_THRESHOLD_MS;
-  } catch {
-    return false;
-  }
+  return (Date.now() - mtimeMs) < ACTIVE_THRESHOLD_MS;
 }
 
 async function getSessionStatus(projectDir, sessionId, agentId) {
-  let filePath;
+  let mtimeMs = 0;
   if (agentId) {
-    filePath = path.join(PROJECTS_DIR, projectDir, sessionId, 'subagents', `agent-${agentId}.jsonl`);
+    const filePath = path.join(PROJECTS_DIR, projectDir, sessionId, 'subagents', `agent-${agentId}.jsonl`);
+    try {
+      const stat = await fs.promises.stat(filePath);
+      mtimeMs = stat.mtimeMs;
+    } catch {
+      return { isActive: false, mtimeMs: 0 };
+    }
   } else {
-    filePath = path.join(PROJECTS_DIR, projectDir, `${sessionId}.jsonl`);
+    // Include subagent files: an in-flight forked skill writes to its agent
+    // file without touching the parent, so polling must detect that to refresh.
+    mtimeMs = await getMaxMtimeForSession(projectDir, sessionId);
+    if (!mtimeMs) return { isActive: false, mtimeMs: 0 };
   }
-  try {
-    const stat = await fs.promises.stat(filePath);
-    return {
-      isActive: (Date.now() - stat.mtimeMs) < ACTIVE_THRESHOLD_MS,
-      mtimeMs: stat.mtimeMs,
-    };
-  } catch {
-    return { isActive: false, mtimeMs: 0 };
-  }
+  return {
+    isActive: (Date.now() - mtimeMs) < ACTIVE_THRESHOLD_MS,
+    mtimeMs,
+  };
 }
 
 module.exports = { listProjects, listSessions, parseTranscript, isSessionActive, getSessionStatus };
