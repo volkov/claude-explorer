@@ -5,6 +5,16 @@ const readline = require('readline');
 const CLAUDE_DIR = path.join(require('os').homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
 
+// Codex stores each session as a JSONL "rollout" under ~/.codex/sessions,
+// bucketed by start date: sessions/YYYY/MM/DD/rollout-<ts>-<session_id>.jsonl.
+// Honor CODEX_HOME if set (matches codex CLI behavior); default to ~/.codex.
+const CODEX_HOME = process.env.CODEX_HOME || path.join(require('os').homedir(), '.codex');
+const CODEX_DIR = path.join(CODEX_HOME, 'sessions');
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Cache resolved session_id -> rollout path so status polling doesn't re-walk
+// the whole tree every 5s. Rollout paths are stable once created.
+const codexPathCache = new Map();
+
 // Simple LRU cache with mtime tracking
 const cache = new Map();
 const cacheMtime = new Map(); // key -> mtimeMs at cache time
@@ -502,4 +512,208 @@ async function getSessionStatus(projectDir, sessionId, agentId) {
   };
 }
 
-module.exports = { listProjects, listSessions, parseTranscript, isSessionActive, getSessionStatus };
+// ── Codex rollout support ──────────────────────────────────────────────
+//
+// Codex (unlike claude) does not write project-scoped transcripts; a session is
+// addressed by a single session_id (== thread_id == the UUID suffix of the
+// rollout filename). We locate the rollout by that id and parse its canonical
+// `response_item` stream into the SAME shape the claude renderer expects, so the
+// existing front-end (messages/blocks/toolResults) is reused verbatim.
+
+// Find the rollout file for a session id: ~/.codex/sessions/**/rollout-*-<id>.jsonl
+async function findRolloutBySessionId(sessionId) {
+  if (!sessionId || !UUID_RE.test(sessionId)) return null;
+
+  const cached = codexPathCache.get(sessionId);
+  if (cached) {
+    try { await fs.promises.stat(cached); return cached; } catch { codexPathCache.delete(sessionId); }
+  }
+
+  const suffix = `-${sessionId.toLowerCase()}.jsonl`;
+
+  // Walk the tree, newest date buckets first (names sort lexicographically, and
+  // YYYY/MM/DD sorts chronologically), so recent sessions resolve fastest.
+  async function walk(dir) {
+    let entries;
+    try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); }
+    catch { return null; }
+    const names = entries.map(e => e.name).sort().reverse();
+    const byName = new Map(entries.map(e => [e.name, e]));
+    // Files first (leaf level), then descend into subdirectories.
+    for (const name of names) {
+      const e = byName.get(name);
+      if (e.isFile() && name.startsWith('rollout-') && name.toLowerCase().endsWith(suffix)) {
+        return path.join(dir, name);
+      }
+    }
+    for (const name of names) {
+      const e = byName.get(name);
+      if (e.isDirectory()) {
+        const found = await walk(path.join(dir, name));
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  const found = await walk(CODEX_DIR);
+  if (found) codexPathCache.set(sessionId, found);
+  return found;
+}
+
+// Map codex tool payloads to a claude-like tool_use input object so the shared
+// front-end tool renderer produces readable output.
+function codexToolInput(payload) {
+  const name = payload.name || 'tool';
+  if (payload.type === 'function_call') {
+    let args;
+    try { args = JSON.parse(payload.arguments || '{}'); }
+    catch { args = { arguments: payload.arguments || '' }; }
+    if (args && typeof args === 'object' && !Array.isArray(args)) {
+      // exec_command uses `cmd`; expose it as `command` for the Bash-style view.
+      if (args.cmd && !args.command) args.command = args.cmd;
+      return args;
+    }
+    return { value: args };
+  }
+  // custom_tool_call: freeform string input (apply_patch, exec, ...)
+  const raw = typeof payload.input === 'string' ? payload.input : '';
+  if (name === 'apply_patch') return { patch: raw };
+  return { command: raw };
+}
+
+// Normalize a tool output payload to { content, isError }.
+function codexToolOutput(payload) {
+  const out = payload.output;
+  if (typeof out !== 'string') return { content: out == null ? '' : JSON.stringify(out), isError: false };
+  if (payload.type === 'custom_tool_call_output') {
+    try {
+      const parsed = JSON.parse(out);
+      const content = typeof parsed.output === 'string' ? parsed.output : out;
+      const exit = parsed.metadata && parsed.metadata.exit_code;
+      return { content, isError: typeof exit === 'number' && exit !== 0 };
+    } catch { return { content: out, isError: false }; }
+  }
+  return { content: out, isError: false };
+}
+
+async function parseCodexRollout(sessionId) {
+  const filePath = await findRolloutBySessionId(sessionId);
+  if (!filePath) return null;
+
+  let stat;
+  try { stat = await fs.promises.stat(filePath); } catch { return null; }
+
+  const cacheKey = `codex/${sessionId}`;
+  if (cache.has(cacheKey) && cacheMtime.has(cacheKey) && cacheMtime.get(cacheKey) >= stat.mtimeMs) {
+    return cache.get(cacheKey);
+  }
+
+  const messages = [];
+  const sessionMeta = { sessionId };
+  let model = null;
+  let currentAssistant = null; // open assistant "response" bubble
+
+  function closeAssistant() { currentAssistant = null; }
+  function ensureAssistant(ts) {
+    if (!currentAssistant) {
+      currentAssistant = { type: 'assistant', role: 'assistant', timestamp: ts, model, blocks: [] };
+      messages.push(currentAssistant);
+    }
+    return currentAssistant;
+  }
+
+  return new Promise((resolve) => {
+    const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
+    const rl = readline.createInterface({ input: stream });
+
+    rl.on('line', (line) => {
+      let obj;
+      try { obj = JSON.parse(line); } catch { return; }
+      const ts = obj.timestamp;
+      const p = obj.payload || {};
+
+      if (obj.type === 'session_meta') {
+        sessionMeta.sessionId = p.id || p.session_id || sessionId;
+        if (p.cwd) sessionMeta.cwd = p.cwd;
+        if (p.cli_version) sessionMeta.version = `codex ${p.cli_version}`;
+        sessionMeta.slug = `codex ${String(sessionMeta.sessionId).slice(0, 8)}`;
+        return;
+      }
+      if (obj.type === 'turn_context') {
+        if (p.model) { model = p.model; if (!sessionMeta.model) sessionMeta.model = p.model; }
+        return;
+      }
+      // event_msg duplicates response_item content in a lossy form — ignore it
+      // and render exclusively from the canonical response_item stream.
+      if (obj.type !== 'response_item') return;
+
+      const pt = p.type;
+
+      if (pt === 'message') {
+        const text = (Array.isArray(p.content) ? p.content : []).map(b => b.text || '').join('');
+        if (p.role === 'assistant') {
+          const a = ensureAssistant(ts);
+          if (text) a.blocks.push({ type: 'text', content: text });
+        } else if (p.role === 'user') {
+          // Hide codex's system injections (environment context) that arrive as
+          // user-role turns; keep the real prompt(s).
+          if (/^\s*<(environment_context|user_instructions)/.test(text)) return;
+          closeAssistant();
+          messages.push({ type: 'user', role: 'user', timestamp: ts, text, toolResults: [] });
+        }
+        // role === 'developer' → system injection, hide.
+        return;
+      }
+
+      if (pt === 'reasoning') {
+        const a = ensureAssistant(ts);
+        const summary = Array.isArray(p.summary)
+          ? p.summary.map(s => (typeof s === 'string' ? s : (s && s.text) || '')).join('\n').trim()
+          : '';
+        a.blocks.push({
+          type: 'thinking',
+          content: summary || '🔒 Reasoning is encrypted by Codex and not available in plaintext.',
+        });
+        return;
+      }
+
+      if (pt === 'function_call' || pt === 'custom_tool_call') {
+        const a = ensureAssistant(ts);
+        a.blocks.push({ type: 'tool_use', id: p.call_id, name: p.name || 'tool', input: codexToolInput(p) });
+        return;
+      }
+
+      if (pt === 'function_call_output' || pt === 'custom_tool_call_output') {
+        const { content, isError } = codexToolOutput(p);
+        closeAssistant();
+        messages.push({
+          type: 'user', role: 'user', timestamp: ts, text: null,
+          toolResults: [{ toolUseId: p.call_id, content, isError }],
+        });
+        return;
+      }
+    });
+
+    rl.on('close', () => {
+      const result = { ...sessionMeta, filePath, messages, subagents: [], agentId: null, isCodex: true };
+      cacheSet(cacheKey, result, stat.mtimeMs);
+      resolve(result);
+    });
+
+    rl.on('error', () => resolve(null));
+  });
+}
+
+async function getCodexStatus(sessionId) {
+  const filePath = await findRolloutBySessionId(sessionId);
+  if (!filePath) return { isActive: false, mtimeMs: 0 };
+  try {
+    const stat = await fs.promises.stat(filePath);
+    return { isActive: (Date.now() - stat.mtimeMs) < ACTIVE_THRESHOLD_MS, mtimeMs: stat.mtimeMs };
+  } catch {
+    return { isActive: false, mtimeMs: 0 };
+  }
+}
+
+module.exports = { listProjects, listSessions, parseTranscript, isSessionActive, getSessionStatus, parseCodexRollout, getCodexStatus };

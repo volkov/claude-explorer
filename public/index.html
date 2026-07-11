@@ -915,6 +915,8 @@ function route() {
     renderTranscript(parts[1], parts[2]);
   } else if (parts[0] === 'subagent' && parts[1] && parts[2] && parts[3]) {
     renderSubagent(parts[1], parts[2], parts[3]);
+  } else if (parts[0] === 'codex' && parts[1]) {
+    renderCodexTranscript(parts[1]);
   } else {
     renderProjectList();
   }
@@ -1084,6 +1086,32 @@ async function renderSubagent(projectDir, sessionId, agentId) {
     renderTranscriptData(data, decoded, sessionId, banner);
   } catch (e) {
     app.innerHTML = `<div class="loading">Error loading subagent transcript: ${esc(e.message)}</div>`;
+  }
+}
+
+async function renderCodexTranscript(sessionId) {
+  stopActivePolling();
+  cleanupScrollTracking();
+  breadcrumb.innerHTML = `<a href="#/">Projects</a><span>/</span>Codex session ${esc(sessionId.slice(0, 8))}`;
+  app.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+  try {
+    const data = await api(`/api/codex/transcript/${encodeURIComponent(sessionId)}`);
+    const banner = `<div class="subagent-banner">
+      <span>Codex transcript <strong>${esc(sessionId.slice(0, 8))}</strong></span>
+      <span style="opacity:0.7">codex resume ${esc(sessionId)}</span>
+    </div>`;
+    renderTranscriptData(data, null, sessionId, banner);
+
+    // If actively running, jump to the latest output immediately.
+    try {
+      const { isActive } = await api(`/api/codex/status/${encodeURIComponent(sessionId)}`);
+      if (isActive) scrollToBottom();
+    } catch {}
+
+    startCodexPolling(sessionId);
+  } catch (e) {
+    app.innerHTML = `<div class="loading">Error loading codex transcript: ${esc(e.message)}</div>`;
   }
 }
 
@@ -1330,12 +1358,16 @@ function renderTodoWrite(block, toolResultMap) {
   return html;
 }
 
+// Codex shell tools (function `exec_command` / freeform `exec` / `shell`) map to
+// the Bash view; `apply_patch` maps to the Edit view.
+const CODEX_SHELL_TOOLS = new Set(['exec_command', 'exec', 'shell', 'container.exec', 'local_shell']);
+
 function getToolClass(name) {
   const n = (name || '').toLowerCase();
-  if (n === 'bash') return 'bash';
+  if (n === 'bash' || CODEX_SHELL_TOOLS.has(n)) return 'bash';
   if (n === 'read') return 'read';
   if (n === 'write') return 'write';
-  if (n === 'edit') return 'edit';
+  if (n === 'edit' || n === 'apply_patch') return 'edit';
   if (n === 'grep') return 'grep';
   if (n === 'glob') return 'glob';
   if (n === 'task') return 'task';
@@ -1345,6 +1377,8 @@ function getToolClass(name) {
 
 function getToolIcon(name) {
   const n = (name || '').toLowerCase();
+  if (CODEX_SHELL_TOOLS.has(n)) return '\u25b6';
+  if (n === 'apply_patch') return '\u270f\ufe0f';
   const icons = {
     bash: '\u25b6', read: '\ud83d\udcc4', write: '\u270f\ufe0f', edit: '\u270f\ufe0f',
     grep: '\ud83d\udd0d', glob: '\ud83d\udcc1', task: '\ud83d\udd00', skill: '\u26a1',
@@ -1357,7 +1391,8 @@ function getToolIcon(name) {
 function getToolDesc(block) {
   const input = block.input || {};
   const n = (block.name || '').toLowerCase();
-  if (n === 'bash') return input.command || input.description || '';
+  if (n === 'bash' || CODEX_SHELL_TOOLS.has(n)) return input.command || input.description || '';
+  if (n === 'apply_patch') return codexPatchDesc(input.patch);
   if (n === 'read') return input.file_path || '';
   if (n === 'write') return input.file_path || '';
   if (n === 'edit') return input.file_path || '';
@@ -1368,10 +1403,22 @@ function getToolDesc(block) {
   return JSON.stringify(input).slice(0, 80);
 }
 
+// Summarize an apply_patch body: the files it touches (e.g. "Add File: x.txt").
+function codexPatchDesc(patch) {
+  if (!patch) return 'patch';
+  const files = [];
+  for (const line of String(patch).split('\n')) {
+    const m = line.match(/^\*\*\* (Add|Update|Delete) File: (.+)$/);
+    if (m) files.push(m[2]);
+  }
+  return files.length ? files.join(', ') : 'patch';
+}
+
 function formatToolInput(block) {
   const input = block.input || {};
   const n = (block.name || '').toLowerCase();
-  if (n === 'bash') return input.command || '';
+  if (n === 'bash' || CODEX_SHELL_TOOLS.has(n)) return input.command || JSON.stringify(input, null, 2);
+  if (n === 'apply_patch') return input.patch || '';
   if (n === 'read') return input.file_path || '';
   if (n === 'write') return `File: ${input.file_path || ''}\n---\n${(input.content || '').slice(0, 2000)}`;
   if (n === 'edit') return `File: ${input.file_path || ''}\n\n--- old ---\n${input.old_string || ''}\n\n--- new ---\n${input.new_string || ''}`;
@@ -1525,37 +1572,62 @@ function cleanupScrollTracking() {
   _userScrolledUp = false;
 }
 
+// Claude sessions: #/session/<projectDir>/<sessionId>
 function startActivePolling(projectDir, sessionId) {
+  _startPolling({
+    statusUrl: `/api/status/${encodeURIComponent(projectDir)}/${sessionId}`,
+    transcriptUrl: `/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`,
+    routeMatches: () => {
+      const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
+      return parts[0] === 'session' && parts[1] && parts[2];
+    },
+    render: (data) => renderTranscriptData(data, projectDir, sessionId),
+  });
+}
+
+// Codex rollouts: #/codex/<sessionId>
+function startCodexPolling(sessionId) {
+  _startPolling({
+    statusUrl: `/api/codex/status/${encodeURIComponent(sessionId)}`,
+    transcriptUrl: `/api/codex/transcript/${encodeURIComponent(sessionId)}`,
+    routeMatches: () => {
+      const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
+      return parts[0] === 'codex' && parts[1];
+    },
+    render: (data) => renderTranscriptData(data, null, sessionId),
+  });
+}
+
+function _startPolling(opts) {
   let wasActive = false;
   let isRefreshing = false;
   let lastMtimeMs = 0;
 
+  async function refresh(mtimeMs, autoScroll) {
+    if (!opts.routeMatches()) return;
+    isRefreshing = true;
+    try {
+      const data = await api(opts.transcriptUrl);
+      opts.render(data);
+      lastMtimeMs = mtimeMs;
+      // Auto-scroll to bottom unless user manually scrolled up
+      if (autoScroll && !_userScrolledUp) scrollToBottom();
+    } finally {
+      isRefreshing = false;
+    }
+  }
+
   async function checkStatus() {
     if (isRefreshing) return;
     try {
-      const { isActive, mtimeMs } = await api(`/api/status/${encodeURIComponent(projectDir)}/${sessionId}`);
+      const { isActive, mtimeMs } = await api(opts.statusUrl);
       // The banner is a persistent node outside #app, so it survives live
       // transcript re-renders and simply reflects the latest polled state.
       setActiveBanner(isActive);
 
       // Refresh transcript while agent is active, but only if file actually changed
       if (isActive && mtimeMs > lastMtimeMs) {
-        const hash = location.hash.slice(1) || '/';
-        const parts = hash.split('/').filter(Boolean);
-        if (parts[0] === 'session' && parts[1] && parts[2]) {
-          isRefreshing = true;
-          try {
-            const data = await api(`/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`);
-            renderTranscriptData(data, projectDir, sessionId);
-            lastMtimeMs = mtimeMs;
-            // Auto-scroll to bottom unless user manually scrolled up
-            if (!_userScrolledUp) {
-              scrollToBottom();
-            }
-          } finally {
-            isRefreshing = false;
-          }
-        }
+        await refresh(mtimeMs, true);
       }
 
       // On the active -> inactive transition, do one final reload so the last
@@ -1564,18 +1636,7 @@ function startActivePolling(projectDir, sessionId) {
       // want the banner and live refresh to come back automatically. Polling is
       // only torn down on navigation, via stopActivePolling().
       if (wasActive && !isActive) {
-        const hash = location.hash.slice(1) || '/';
-        const parts = hash.split('/').filter(Boolean);
-        if (parts[0] === 'session' && parts[1] && parts[2]) {
-          isRefreshing = true;
-          try {
-            const data = await api(`/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`);
-            renderTranscriptData(data, projectDir, sessionId);
-            lastMtimeMs = mtimeMs;
-          } finally {
-            isRefreshing = false;
-          }
-        }
+        await refresh(mtimeMs, false);
       }
       wasActive = isActive;
     } catch {}
