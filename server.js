@@ -1,7 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { listProjects, listSessions, parseTranscript, isSessionActive, getSessionStatus } = require('./parser');
+const { listProjects, listSessions, parseTranscript, isSessionActive, getSessionStatus, parseCodexRollout, getCodexStatus } = require('./parser');
 
 const PORT = process.env.PORT || 3939;
 
@@ -93,6 +93,30 @@ async function handleRequest(req, res) {
       const transcript = await parseTranscript(transcriptMatch[1], transcriptMatch[2]);
       if (!transcript) { sendJSON(res, { error: 'Not found' }, 404); return; }
       sendJSON(res, transcript);
+    } catch (e) {
+      sendJSON(res, { error: e.message }, 500);
+    }
+    return;
+  }
+
+  // Codex rollout transcript (addressed by session_id only — no project dir)
+  const codexTranscriptMatch = pathname.match(/^\/api\/codex\/transcript\/([^/]+)$/);
+  if (codexTranscriptMatch) {
+    try {
+      const transcript = await parseCodexRollout(codexTranscriptMatch[1]);
+      if (!transcript) { sendJSON(res, { error: 'Not found' }, 404); return; }
+      sendJSON(res, transcript);
+    } catch (e) {
+      sendJSON(res, { error: e.message }, 500);
+    }
+    return;
+  }
+
+  const codexStatusMatch = pathname.match(/^\/api\/codex\/status\/([^/]+)$/);
+  if (codexStatusMatch) {
+    try {
+      const status = await getCodexStatus(codexStatusMatch[1]);
+      sendJSON(res, status);
     } catch (e) {
       sendJSON(res, { error: e.message }, 500);
     }
