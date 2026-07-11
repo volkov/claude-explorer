@@ -5,10 +5,14 @@ rollout, устройство вьювера `claude-explorer`, предлага
 интеграции с pyphony.
 
 **Мотивация:** [SER-581] — критик-луп ([SER-557]) по умолчанию использует backend
-**codex**, а codex не создаёт claude-транскриптов (`wrapper.py:654`:
-`transcript_path=""`). Поэтому `_build_transcript_url` (`orchestrator.py:130`) для
+**codex**, а codex не создаёт claude-транскриптов (`wrapper.py:664`:
+`transcript_path=""`). Поэтому `_build_transcript_url` (`orchestrator.py:139`) для
 codex-критика возвращает `None`, и ссылку на его транскрипт в тред поставить нельзя.
 Нужно научить вьювер показывать codex-сессии по `session_id`.
+
+> **NB (2026-07-11):** pyphony уже решил свою часть — билдер `#/codex/<session_id>`
+> реализован (SER-581, `f83d94d`) и подставляется в verdict-комментарий критика.
+> Осталась только реализация вьювера под этот контракт. Подробнее — §0.5.
 
 ---
 
@@ -35,6 +39,52 @@ codex-критика возвращает `None`, и ссылку на его т
   (переиспользует существующий рендер сообщений/инструментов). В pyphony — маленький
   билдер `_build_codex_transcript_url(...)` и его проброс в комментарии критика и в
   session-started комментарий codex-актора.
+
+---
+
+## 0.5. Статус на момент переоткрытия тикета (2026-07-11, важно)
+
+С момента первого закрытия SER-582 расклад изменился — **pyphony уже реализовал свою
+половину плана, а вьювер — ещё нет**. Это и есть причина переоткрытия: критик-ссылки
+уже генерируются, но ведут «в никуда».
+
+**Что уже сделано (pyphony, коммит `f83d94d` «feat(SER-581): link critique
+transcripts in verdict comments (#83)», 2026-07-11):**
+
+- `_build_codex_transcript_url(base_url, session_id)` — **реализован**
+  (`orchestrator.py:157`), возвращает `"{base}/#/codex/{session_id}"`.
+- Диспетчер `_build_agent_transcript_url(..., agent, transcript_path, session_id)`
+  (`orchestrator.py:174`): `agent=="codex"` → codex-URL, иначе старый
+  `_build_transcript_url`.
+- `CritiqueRun` (`critique.py:~30`) теперь несёт `agent`, `transcript_path`,
+  `session_id` — данные критика для построения ссылки.
+- `build_verdict_comment(..., transcript_url=...)` (`critique.py:414`) добавляет
+  строку `- Transcript: [{agent}]({transcript_url})` (`critique.py:442-443`).
+
+**Следствие:** verdict-комментарий codex-критика теперь содержит ссылку вида
+`http://localhost:3939/#/codex/<session_id>`. То есть **URL-контракт зафиксирован
+именно в том виде, что предлагался в этом ресёрче** (`#/codex/<session_id>`) — это
+больше не «предложение», а факт, к которому вьювер обязан подстроиться.
+
+**Чего НЕ сделано (вьювер = этот репозиторий):** поддержки codex во вьювере нет
+вообще. Проверено: `grep -rin codex server.js parser.js public/index.html` → 0
+совпадений. Роутер (`public/index.html:865-876`) знает только
+`project`/`session`/`subagent`; ветки `#/codex/...` нет, поэтому такой хэш
+**молча проваливается в `else → renderProjectList()`** — пользователь по ссылке
+критика видит список проектов, а не транскрипт. Эндпоинтов `/api/codex/*` в
+`server.js` тоже нет.
+
+**Итог:** ссылки на codex-транскрипт критика **сейчас нерабочие (мертвые)**.
+Оставшаяся работа по SER-582 — чисто на стороне вьювера: реализовать
+`#/codex/<session_id>` + `/api/codex/*` + `parseCodexRollout` под уже
+зафиксированный контракт (см. §3–§4). pyphony трогать не нужно.
+
+**Повторная эмпирическая проверка (на 50 rollout-файлах, cli 0.142.5):** `session_id`
+из имени файла == `session_meta.id` во всех 50 (0 расхождений), 50 уникальных id, 0
+коллизий, 0 файлов без meta-id → glob по `session_id` по-прежнему однозначен.
+Замечание: сессии, запущенные pyphony через `codex exec`, имеют
+`originator="codex_exec"`, `source="exec"` (не `codex_cli_rs`/`cli`), но `id` и
+структура строк идентичны — парсер это не затрагивает.
 
 ---
 
@@ -265,9 +315,14 @@ GET /api/codex/sessions                  → (опц.) список codex-сес
 
 ## 5. Интеграция с pyphony
 
-### 5.1. Новый билдер ссылки
+> **Обновление (2026-07-11): всё в этом разделе УЖЕ реализовано в pyphony**
+> (коммит `f83d94d`, SER-581). Ниже — исходный план, оставлен как описание того,
+> что именно было сделано. Действий на стороне pyphony по SER-582 не требуется —
+> осталась только реализация вьювера (§4).
 
-Рядом с `_build_transcript_url` (`orchestrator.py:130`):
+### 5.1. Новый билдер ссылки — ✅ реализован (`orchestrator.py:157`)
+
+Рядом с `_build_transcript_url` (`orchestrator.py:139`):
 
 ```python
 def _build_codex_transcript_url(base_url: str, session_id: str) -> str | None:
@@ -281,23 +336,21 @@ def _build_codex_transcript_url(base_url: str, session_id: str) -> str | None:
 - `WrapperAgentInfo.session_id` — wrapper пишет его в `.pyphony-agent.json` по
   приходу session_id (`wrapper.py:605-612`), `transcript_path` остаётся `""`.
 
-### 5.2. Главный кейс SER-581 — ссылка на транскрипт критика
+### 5.2. Главный кейс SER-581 — ссылка на транскрипт критика — ✅ реализовано
 
-Сейчас (`orchestrator.py:2236-2267`) `_default_run_critique` читает
-`WrapperResult`, но **возвращает только текст** — `result.session_id` теряется. А
-`_post_critique_comment` (`:2269`) / `build_verdict_comment`
-(`critique.py:386`) вообще не содержат ссылки на транскрипт.
+Как это сделано в `f83d94d`:
+1. `_default_run_critique` (`orchestrator.py:2420`) теперь возвращает `CritiqueRun`
+   (`critique.py:~30`) с полями `text`, `agent`, `transcript_path`, `session_id`.
+2. `_post_critique_comment` (`orchestrator.py:2578`) строит URL через диспетчер
+   `_build_agent_transcript_url(..., agent, transcript_path, session_id)`
+   (`orchestrator.py:174`): `agent=="codex"` → `_build_codex_transcript_url`,
+   иначе `_build_transcript_url`.
+3. `build_verdict_comment(..., transcript_url=...)` (`critique.py:414`) добавляет
+   строку `- Transcript: [{agent}]({transcript_url})` (`critique.py:442-443`).
 
-План:
-1. `_default_run_critique` возвращает не только текст, но и `session_id`
-   (+ `agent_type`), напр. небольшой dataclass/кортеж.
-2. Прокинуть в `_post_critique_comment` → `build_verdict_comment(...)`:
-   - `agent=="codex"` → `_build_codex_transcript_url(base, session_id)`;
-   - `agent=="claude"` → существующий `_build_transcript_url(base, transcript_path)`
-     (у claude-критика `transcript_path` есть).
-3. В шапку verdict-комментария добавить `[Transcript](<url>)`.
-
-Это ровно закрывает SER-581 (дефолт — codex).
+Это закрывает pyphony-часть SER-581. **Но** для codex URL ведёт на `#/codex/<id>`,
+который вьювер пока не рендерит (см. §0.5) — поэтому SER-582 (вьювер) и был
+переоткрыт.
 
 ### 5.3. Побочный кейс — session-started для codex-актора
 
@@ -316,24 +369,38 @@ def _build_codex_transcript_url(base_url: str, session_id: str) -> str | None:
 
 ## 6. Оценка объёма и план
 
-**Оценка:** S–M (≈0.5–1.5 дня инженера).
+**Оценка оставшейся работы:** S–M (≈0.5–1 день инженера). Фаза 2 (pyphony) уже
+сделана в `f83d94d`; осталась только фаза 1 (вьювер).
 
-- Вьювер: новый парсер codex (главная работа) + роут/эндпоинты + фронт-ветка
-  (рендер переиспользуется) — **M**.
-- pyphony: билдер ссылки + проброс session_id из критика + правка verdict-комментария
-  — **S**.
+- ✅ **pyphony** (SER-581, `f83d94d`): билдер ссылки + диспетчер + проброс
+  `session_id`/`agent` из критика + строка Transcript в verdict-комментарии — сделано.
+- ⬜ **Вьювер** (эта работа): новый парсер codex + роут/эндпоинты + фронт-ветка
+  (рендер переиспользуется) — **M**. Это и есть остаток SER-582.
 
-**Фазы:**
-1. **Вьювер (независимо мержится):** `parseCodexRollout` + `/api/codex/*` +
-   `#/codex/<id>` рендер. Приёмка: открыть `#/codex/<реальный session_id>` — видны
-   сообщения, вызовы инструментов и их результаты.
-2. **pyphony — критик (закрывает SER-581):** `_build_codex_transcript_url`, проброс
-   `session_id`, ссылка в `build_verdict_comment`. Приёмка: комментарий критика в
-   треде содержит рабочую ссылку на codex-транскрипт.
-3. **pyphony — актор (опц.):** ссылка в session-started для codex-агентов.
+**Оставшиеся фазы:**
+1. **Вьювер (закрывает SER-582 и оживляет ссылки SER-581):** `parseCodexRollout`
+   (`parser.js`) + `/api/codex/transcript/<id>` и `/api/codex/status/<id>`
+   (`server.js`) + ветка `parts[0]==='codex'` → `renderCodexTranscript(sessionId)`
+   в роутере (`public/index.html:865`), переиспользующая `renderTranscriptData`
+   (`index.html:1021`) и поллинг статуса (`index.html:1454-1492`). Приёмка: открыть
+   `#/codex/<реальный session_id>` — видны сообщения, вызовы инструментов и их
+   результаты; ссылка из verdict-комментария codex-критика ведёт на живой транскрипт.
+2. **(Опц.) session-started для codex-актора** — §5.3, отдельно от главного кейса.
 
-**Тесты:** зафиксировать фикстуру rollout в тестах вьювера; в pyphony — юнит на
-`_build_codex_transcript_url` и на присутствие ссылки в verdict-комментарии.
+**Точный контракт для вьювера (из §1.4 + текущей модели `parser.js`):**
+`parseCodexRollout(sessionId)` должен вернуть тот же объект, что `parseTranscript`:
+`{ ...sessionMeta, filePath, messages, subagents:[], agentId:null }`, где
+`messages[]` — это `{type:'assistant', blocks:[{type:'text'|'thinking'|'tool_use'}]}`
+и `{type:'user', text, toolResults:[{toolUseId, content, isError}]}`. Тогда весь
+существующий фронт-рендер (`renderTranscriptData`) заработает без изменений.
+Маппинг: `message role=assistant` → assistant.blocks[text]; `role=user` → user.text;
+`role=developer` → скрыть; `reasoning` → assistant.blocks[thinking] «(encrypted)» или
+skip; `function_call`/`custom_tool_call` → assistant.blocks[tool_use]
+(`id=call_id`, `name`, `input`=распарсенный `arguments`/сырой `input`);
+`*_output` → user.toolResults[{toolUseId=call_id, content=output}].
+
+**Тесты:** зафиксировать фикстуру rollout в тестах вьювера (парс → ожидаемая
+структура messages); ссылку в pyphony уже покрывает SER-581.
 
 ---
 
@@ -354,18 +421,26 @@ def _build_codex_transcript_url(base_url: str, session_id: str) -> str | None:
 
 ---
 
-## Ссылки на код (на момент исследования)
+## Ссылки на код (актуализировано 2026-07-11)
 
-- Вьювер: `server.js`, `parser.js`, `public/index.html` (роутер — ~строка 865).
-- pyphony:
-  - `src/pyphony/orchestrator.py:130` `_build_transcript_url`
-  - `src/pyphony/orchestrator.py:1974` session-started (codex → без ссылки)
-  - `src/pyphony/orchestrator.py:2134-2267` `_default_run_critique` (теряет session_id)
-  - `src/pyphony/orchestrator.py:2269` `_post_critique_comment`
-  - `src/pyphony/critique.py:386` `build_verdict_comment`
-  - `src/pyphony/wrapper.py:605-654` codex: пишет `session_id`, `transcript_path=""`
-  - `src/pyphony/codex_runner.py:182-190` `thread.started` → `session_id`
-  - `src/pyphony/models.py:196` `explorer_base_url`
+- Вьювер (этот репозиторий, **codex пока НЕ поддержан**):
+  - `server.js:45-100` — API-роуты (regex); добавить `/api/codex/*`.
+  - `parser.js:5-6` — `CLAUDE_DIR`/`PROJECTS_DIR` (жёстко на `~/.claude`);
+    `parser.js:183` `parseTranscript`, возврат-структура `parser.js:445-451`;
+    модель сообщений `parser.js:276-337`.
+  - `public/index.html:865-876` роутер (нет ветки `codex`), `:975` `renderTranscript`,
+    `:1021` `renderTranscriptData` (переиспользуемый рендер), `:1454-1492` поллинг.
+- pyphony (**codex-ссылка УЖЕ реализована**, `f83d94d` / SER-581):
+  - `src/pyphony/orchestrator.py:139` `_build_transcript_url` (claude)
+  - `src/pyphony/orchestrator.py:157` `_build_codex_transcript_url` ✅ (`#/codex/<id>`)
+  - `src/pyphony/orchestrator.py:174` `_build_agent_transcript_url` ✅ (диспетчер по `agent`)
+  - `src/pyphony/orchestrator.py:2420` `_default_run_critique` → возвращает `CritiqueRun`
+  - `src/pyphony/orchestrator.py:2578` `_post_critique_comment` (строит URL и зовёт билдер)
+  - `src/pyphony/critique.py:~30` `CritiqueRun` (`agent`/`transcript_path`/`session_id`)
+  - `src/pyphony/critique.py:414` `build_verdict_comment(transcript_url=...)`, строка `:442-443`
+  - `src/pyphony/wrapper.py:663-664` codex: пишет `session_id`, `transcript_path=""`
+  - `src/pyphony/codex_runner.py:250-255` `thread.started` → `result.session_id`
+  - `src/pyphony/models.py:192` `explorer_base_url` (`http://localhost:3939`)
 
 [SER-581]: https://linear.app/serg-v/issue/SER-581
 [SER-557]: https://linear.app/serg-v/issue/SER-557
