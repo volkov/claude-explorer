@@ -19,7 +19,10 @@ function cacheSet(key, value, mtimeMs) {
   if (mtimeMs) cacheMtime.set(key, mtimeMs);
 }
 
-const ACTIVE_THRESHOLD_MS = 30000; // 30 seconds
+const ACTIVE_THRESHOLD_MS = 120000; // 2 minutes — long operations (model
+// thinking, long Bash/build/test runs, web fetches, subagents not writing to
+// the parent) can go a while without touching the transcript file; a wider
+// window keeps the "actively working" indicator from flapping off mid-task.
 
 function humanProjectName(dirName) {
   // -Users-serg-v-some-project -> some-project
