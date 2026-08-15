@@ -224,6 +224,12 @@ async function parseTranscript(projectDir, sessionId, agentId) {
   const toolUseToAgent = new Map(); // tool_use_id -> agentId
   const toolUseBlocks = new Map(); // tool_use_id -> tool_use block reference
   let sessionMeta = {};
+  // Context tracking: the last assistant usage tells how full the context
+  // window currently is (input + cache read + cache creation = what was sent
+  // to the API on that request). Post-compaction requests reflect the smaller
+  // context automatically, so no compact-marker handling is needed.
+  let lastUsage = null;
+  let lastUsageModel = null;
 
   return new Promise((resolve) => {
     const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
@@ -312,6 +318,17 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         }
         if (obj.message?.usage) {
           msg.usage = obj.message.usage;
+          // Track the freshest usage on this transcript's own context chain.
+          // In the parent transcript, sidechain messages belong to subagent
+          // contexts — skip them; in a subagent file every line is its own.
+          if (agentId || !obj.isSidechain) {
+            const u = obj.message.usage;
+            const total = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0);
+            if (total > 0) {
+              lastUsage = u;
+              lastUsageModel = obj.message.model || null;
+            }
+          }
         }
       } else if (msg.type === 'user') {
         msg.toolResults = [];
@@ -461,6 +478,14 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         messages,
         subagents,
         agentId: agentId || null,
+        context: lastUsage ? {
+          inputTokens: lastUsage.input_tokens || 0,
+          cacheCreationTokens: lastUsage.cache_creation_input_tokens || 0,
+          cacheReadTokens: lastUsage.cache_read_input_tokens || 0,
+          outputTokens: lastUsage.output_tokens || 0,
+          total: (lastUsage.input_tokens || 0) + (lastUsage.cache_creation_input_tokens || 0) + (lastUsage.cache_read_input_tokens || 0),
+          model: lastUsageModel,
+        } : null,
       };
 
       cacheSet(cacheKey, result, cacheMtimeRef);
@@ -613,6 +638,9 @@ async function parseCodexRollout(sessionId) {
   const sessionMeta = { sessionId };
   let model = null;
   let currentAssistant = null; // open assistant "response" bubble
+  // Codex rollouts report context usage (and the model's context window!) in
+  // event_msg/token_count entries; keep the latest one for the header gauge.
+  let lastTokenInfo = null;
 
   function closeAssistant() { currentAssistant = null; }
   function ensureAssistant(ts) {
@@ -645,7 +673,12 @@ async function parseCodexRollout(sessionId) {
         return;
       }
       // event_msg duplicates response_item content in a lossy form — ignore it
-      // and render exclusively from the canonical response_item stream.
+      // for rendering, except token_count which carries context usage and the
+      // model context window (not present anywhere in the response_item stream).
+      if (obj.type === 'event_msg' && p.type === 'token_count' && p.info) {
+        lastTokenInfo = p.info;
+        return;
+      }
       if (obj.type !== 'response_item') return;
 
       const pt = p.type;
@@ -696,7 +729,22 @@ async function parseCodexRollout(sessionId) {
     });
 
     rl.on('close', () => {
-      const result = { ...sessionMeta, filePath, messages, subagents: [], agentId: null, isCodex: true };
+      let context = null;
+      if (lastTokenInfo) {
+        // last_token_usage describes the most recent request — its input size
+        // is the current context; total_token_usage is cumulative across the
+        // session and only serves as a fallback.
+        const u = lastTokenInfo.last_token_usage || lastTokenInfo.total_token_usage || {};
+        const total = (u.input_tokens || 0) + (u.output_tokens || 0);
+        if (total > 0) {
+          context = {
+            total,
+            window: lastTokenInfo.model_context_window || null,
+            model: sessionMeta.model || model || null,
+          };
+        }
+      }
+      const result = { ...sessionMeta, filePath, messages, subagents: [], agentId: null, isCodex: true, context };
       cacheSet(cacheKey, result, stat.mtimeMs);
       resolve(result);
     });
