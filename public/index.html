@@ -710,6 +710,12 @@ a:hover { text-decoration: underline; }
 .session-meta span { white-space: nowrap; }
 .session-meta strong { color: var(--text); }
 
+/* Context usage — deliberately low-key: dim text next to the model name.
+   Hover for the full token breakdown. */
+.ctx-usage { color: var(--text-dimmer); cursor: default; }
+.ctx-usage.warn { color: var(--accent-orange); }
+.ctx-usage.crit { color: var(--accent-red); }
+
 /* File path row */
 .file-path-row {
   background: var(--bg-surface);
@@ -1144,6 +1150,20 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
   if (data.cwd) meta.push(`<span><strong>CWD:</strong> ${esc(data.cwd)}</span>`);
   if (data.version) meta.push(`<span><strong>Version:</strong> ${esc(data.version)}</span>`);
   if (data.gitBranch) meta.push(`<span><strong>Branch:</strong> ${esc(data.gitBranch)}</span>`);
+  // Model + current context usage, kept together and understated.
+  if (data.context && data.context.total) {
+    const ctxModel = data.context.model || data.model;
+    const win = data.context.window || contextWindowFor(ctxModel);
+    // Codex context has no per-field breakdown; claude context does.
+    const usage = data.context.window ? null : {
+      input_tokens: data.context.inputTokens,
+      cache_read_input_tokens: data.context.cacheReadTokens,
+      cache_creation_input_tokens: data.context.cacheCreationTokens,
+      output_tokens: data.context.outputTokens,
+    };
+    const modelPart = ctxModel ? `<strong>Model:</strong> ${esc(ctxModel)} &middot; ` : `<strong>Context:</strong> `;
+    meta.push(`<span>${modelPart}${ctxUsageHtml(data.context.total, win, usage)}</span>`);
+  }
   if (meta.length) html += `<div class="session-meta">${meta.join('')}</div>`;
 
   if (data.filePath) {
@@ -1184,9 +1204,14 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
     if (msg.type === 'assistant' && msg.blocks) {
       const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
       const modelLabel = msg.model ? ` &middot; ${esc(msg.model)}` : '';
+      // Context consumed as of this message, shown quietly next to the model.
+      const ctxTokens = usageContextTokens(msg.usage);
+      const ctxLabel = ctxTokens
+        ? ` &middot; ${ctxUsageHtml(ctxTokens, contextWindowFor(msg.model || data.model), msg.usage)}`
+        : '';
       const jsonBtn = msg._raw ? `<button class="view-json-btn" onclick="showRawJson('${rawKey}')">{ } JSON</button>` : '';
       html += `<div class="msg assistant-msg">
-        <div class="msg-header"><span class="role assistant">Assistant</span><span>${time}${modelLabel}</span>${jsonBtn}</div>`;
+        <div class="msg-header"><span class="role assistant">Assistant</span><span>${time}${modelLabel}${ctxLabel}</span>${jsonBtn}</div>`;
 
       for (const block of msg.blocks) {
         if (block.type === 'thinking') {
@@ -1430,6 +1455,61 @@ function formatToolInput(block) {
 function renderMarkdown(text) {
   if (!text) return '';
   try { return marked.parse(text); } catch { return esc(text); }
+}
+
+// ---- Context usage helpers ----
+// Claude transcripts don't record the context window size, so map by model id:
+// all current models (Fable 5, Opus/Sonnet 4.6+/5) have a 1M window; Haiku 4.5
+// and legacy claude-3.x are 200K. Codex rollouts carry the window explicitly
+// (model_context_window), so they never hit this map.
+const DEFAULT_CONTEXT_WINDOW = 1000000;
+const CONTEXT_WINDOWS = [
+  ['claude-haiku', 200000],
+  ['claude-3', 200000],
+];
+
+function contextWindowFor(model) {
+  const m = (model || '').toLowerCase();
+  for (const [prefix, win] of CONTEXT_WINDOWS) {
+    if (m.startsWith(prefix)) return win;
+  }
+  return DEFAULT_CONTEXT_WINDOW;
+}
+
+function fmtTokens(n) {
+  if (!n || !isFinite(n)) return '0';
+  if (n < 1000) return String(n);
+  if (n < 1000000) {
+    const k = n / 1000;
+    return (k < 100 ? k.toFixed(1) : String(Math.round(k))) + 'k';
+  }
+  const m = n / 1000000;
+  return (Number.isInteger(m) ? String(m) : m.toFixed(1)) + 'M';
+}
+
+// Context consumed at the point of an API request:
+// input + cache read + cache creation = what was actually sent to the model.
+function usageContextTokens(usage) {
+  if (!usage) return 0;
+  return (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+}
+
+// Small dim "63.9k/1M ctx" label with a detailed tooltip. The % is
+// informational — Claude Code auto-compacts before the raw window fills up.
+function ctxUsageHtml(totalTokens, windowSize, usage) {
+  if (!totalTokens) return '';
+  const pct = windowSize ? Math.round((totalTokens / windowSize) * 100) : null;
+  const cls = pct >= 95 ? ' crit' : (pct >= 80 ? ' warn' : '');
+  let title = `Context used: ${totalTokens.toLocaleString('en-US')} tokens`;
+  if (windowSize) title += ` of ${windowSize.toLocaleString('en-US')} (${pct}%)`;
+  if (usage) {
+    title += ` — input ${(usage.input_tokens || 0).toLocaleString('en-US')}`
+      + `, cache read ${(usage.cache_read_input_tokens || 0).toLocaleString('en-US')}`
+      + `, cache write ${(usage.cache_creation_input_tokens || 0).toLocaleString('en-US')}`
+      + `, output ${(usage.output_tokens || 0).toLocaleString('en-US')}`;
+  }
+  const label = windowSize ? `${fmtTokens(totalTokens)}/${fmtTokens(windowSize)}` : fmtTokens(totalTokens);
+  return `<span class="ctx-usage${cls}" title="${esc(title)}">${label} ctx</span>`;
 }
 
 function esc(s) {
