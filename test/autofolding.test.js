@@ -65,6 +65,43 @@ test('visible assistant and user text break activity runs, including within a me
   ]);
 });
 
+test('system context renders collapsed with its own label and preserves the user prompt', () => {
+  const { context, app } = viewer();
+  const setup = {
+    type: 'system', text: 'Available plugins', timestamp: '2026-09-05T01:10:28.000Z',
+    _raw: JSON.stringify({ payload: { role: 'user', content: 'Available plugins' } }),
+  };
+  const data = { isCodex: true, messages: [setup, user('Fix the first message label.')] };
+  context.renderTranscriptData(data, null, 'session');
+  assert.match(app.innerHTML, /<details class="msg system-msg" id="system-m0-b0">/);
+  assert.match(app.innerHTML, /class="role system">System<\/span>/);
+  assert.match(app.innerHTML, /Session context/);
+  assert.match(app.innerHTML, /Available plugins/);
+  assert.match(app.innerHTML, /class="role user">User<\/span>/);
+  assert.equal((app.innerHTML.match(/class="msg user-msg"/g) || []).length, 1);
+  assert.ok(app.innerHTML.indexOf('Fix the first message label.') > app.innerHTML.indexOf('</details>'));
+  assert.equal(JSON.parse(context._rawJsonMap.raw_0).payload.role, 'user');
+  data.messages.push(assistant(text('Checking')));
+  context.renderTranscriptData(data, null, 'session');
+  assert.match(app.innerHTML, /id="system-m0-b0"/);
+});
+
+test('system context stays visible between separate activity groups', () => {
+  const { context, app } = viewer();
+  const data = { messages: [
+    assistant(tool('a'), tool('b')),
+    { type: 'system', text: 'Updated session context' },
+    assistant(tool('c'), tool('d')),
+  ] };
+  assert.deepEqual(plain(context.groupTranscriptEntries(data).map(g => [g.activity, g.entries.length])), [
+    [true, 2], [false, 1], [true, 2],
+  ]);
+  context.renderTranscriptData(data, null, 'session');
+  assert.equal((app.innerHTML.match(/class="activity-group"/g) || []).length, 2);
+  assert.ok(app.innerHTML.indexOf('system-m1-b0') > app.innerHTML.indexOf('</details>'));
+  assert.ok(app.innerHTML.indexOf('system-m1-b0') < app.innerHTML.indexOf('activity-m2-b0'));
+});
+
 test('subagent transcripts include their sidechain activity', () => {
   const { context, app } = viewer();
   const messages = [{ ...assistant(thinking('Plan'), tool('a')), isSidechain: true }];
@@ -125,7 +162,7 @@ test('TodoWrite, subagent links and long results survive grouping with stable in
 
 test('live disclosure restoration keeps several groups and nested details open and is scoped', () => {
   const { context, app, elements } = viewer();
-  const details = [{ id: 'group-a', open: false }, { id: 'group-b', open: false }, { id: 'thinking', open: false }];
+  const details = [{ id: 'group-a', open: false }, { id: 'group-b', open: false }, { id: 'thinking', open: false }, { id: 'system-m3-b0', open: false }];
   const input = { id: 'input', style: { display: 'none' } };
   const expandedResult = {
     id: 'result', dataset: {},

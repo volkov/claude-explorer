@@ -622,6 +622,19 @@ function codexToolOutput(payload) {
   return { content: out, isError: false };
 }
 
+// Codex records setup context as user-role messages. Only classify complete,
+// known wrappers so prompts that mention these tags (or follow them) stay User.
+function isCodexSetupMessage(text) {
+  let remaining = text.trim();
+  if (!remaining) return false;
+  while (remaining) {
+    const block = remaining.match(/^(?:<(recommended_plugins|environment_context|user_instructions)>[\s\S]*?<\/\1>|# AGENTS\.md instructions(?: for [^\r\n]+)?\r?\n+\s*<INSTRUCTIONS>[\s\S]*?<\/INSTRUCTIONS>)/);
+    if (!block) return false;
+    remaining = remaining.slice(block[0].length).trimStart();
+  }
+  return true;
+}
+
 async function parseCodexRollout(sessionId) {
   const filePath = await findRolloutBySessionId(sessionId);
   if (!filePath) return null;
@@ -688,14 +701,11 @@ async function parseCodexRollout(sessionId) {
         if (p.role === 'assistant') {
           const a = ensureAssistant(ts);
           if (text) a.blocks.push({ type: 'text', content: text });
-        } else if (p.role === 'user') {
-          // Hide codex's system injections (environment context) that arrive as
-          // user-role turns; keep the real prompt(s).
-          if (/^\s*<(environment_context|user_instructions)/.test(text)) return;
+        } else if (['user', 'developer', 'system'].includes(p.role)) {
+          const type = p.role !== 'user' || isCodexSetupMessage(text) ? 'system' : 'user';
           closeAssistant();
-          messages.push({ type: 'user', role: 'user', timestamp: ts, text, toolResults: [] });
+          messages.push({ type, role: type, timestamp: ts, text, toolResults: [], _raw: line });
         }
-        // role === 'developer' → system injection, hide.
         return;
       }
 
