@@ -237,6 +237,36 @@ a:hover { text-decoration: underline; }
 .msg-header .role.user { background: var(--bg-user-role); color: var(--accent); }
 .msg-header .role.assistant { background: var(--bg-assistant-role); color: var(--accent-green); }
 
+/* Consecutive tool calls and thinking */
+.activity-group {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.activity-group > summary {
+  padding: 10px 14px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+}
+.activity-group > summary:hover { background: var(--bg-tool); }
+.activity-group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.activity-summary {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  vertical-align: middle;
+  width: calc(100% - 20px);
+}
+.activity-count { color: var(--text); font-weight: 500; }
+.activity-preview { flex: 1 1 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-errors { color: var(--accent-red); }
+.activity-hide, .activity-group[open] > summary .activity-show { display: none; }
+.activity-group[open] > summary .activity-hide { display: inline; }
+.activity-group[open] > summary { border-bottom: 1px solid var(--border); }
+
 /* Thinking */
 .thinking-block {
   margin: 6px 0;
@@ -1121,6 +1151,80 @@ async function renderCodexTranscript(sessionId) {
   }
 }
 
+// Ignore invisible messages before grouping so tool results and sidechains do
+// not split a run. Keep source positions as stable IDs while live data grows.
+function groupTranscriptEntries(data) {
+  const groups = [];
+  data.messages.forEach((msg, msgIndex) => {
+    if (msg.isSidechain && !data.agentId) return;
+    const append = (block, blockIndex) => {
+      const activity = block && (block.type === 'thinking' || block.type === 'tool_use');
+      let group = groups[groups.length - 1];
+      if (!group || group.activity !== !!activity) {
+        group = { activity: !!activity, entries: [] };
+        groups.push(group);
+      }
+      group.entries.push({ msg, msgIndex, block, key: `m${msgIndex}-b${blockIndex}` });
+    };
+    if (msg.type === 'user' && msg.text) append(null, 0);
+    if (msg.type === 'assistant') {
+      (msg.blocks || []).forEach((block, blockIndex) => {
+        if (block.type === 'text' && !(block.content || '').trim()) return;
+        if (['text', 'thinking', 'tool_use'].includes(block.type)) append(block, blockIndex);
+      });
+    }
+  });
+  return groups;
+}
+
+function renderActivitySummary(entries, toolResultMap) {
+  const tools = entries.filter(entry => entry.block.type === 'tool_use');
+  const thinkingCount = entries.length - tools.length;
+  const counts = [];
+  if (tools.length) counts.push(`${tools.length} tool call${tools.length === 1 ? '' : 's'}`);
+  if (thinkingCount) counts.push(`${thinkingCount} thinking block${thinkingCount === 1 ? '' : 's'}`);
+  const toolCounts = new Map();
+  for (const { block } of tools) {
+    const name = block.name || 'tool';
+    toolCounts.set(name, (toolCounts.get(name) || 0) + 1);
+  }
+  const preview = tools.length
+    ? [...toolCounts].map(([name, count]) => count > 1 ? `${name} ×${count}` : name).join(', ')
+    : (entries.find(entry => (entry.block.content || '').trim())?.block.content || '').replace(/\s+/g, ' ').slice(0, 160);
+  const errors = tools.filter(({ block }) => toolResultMap.get(block.id)?.isError).length;
+  return `<summary><span class="activity-summary">
+    <span class="activity-count">${counts.join(' · ')}</span>
+    <span class="activity-preview">${esc(preview)}</span>
+    ${errors ? `<span class="activity-errors">${errors} error${errors === 1 ? '' : 's'}</span>` : ''}
+    <span class="activity-show">Show details</span><span class="activity-hide">Hide details</span>
+  </span></summary>`;
+}
+
+// Snapshot the DOM before a live refresh. Scope it to the transcript so opening
+// a different session (or subagent) starts with the default collapsed view.
+function captureTranscriptDisclosures(transcriptKey) {
+  const transcript = app.querySelector('.transcript');
+  if (!transcript || transcript.dataset.transcriptKey !== transcriptKey) return null;
+  return {
+    details: [...transcript.querySelectorAll('details[open][id]')].map(el => el.id),
+    inputs: [...transcript.querySelectorAll('.tool-input[id]')].filter(el => el.style.display !== 'none').map(el => el.id),
+    results: [...transcript.querySelectorAll('[data-expanded-result]')].map(el => el.id),
+  };
+}
+
+function restoreTranscriptDisclosures(state) {
+  if (!state) return;
+  for (const id of state.details) {
+    const el = $(id);
+    if (el) el.open = true;
+  }
+  for (const id of state.inputs) toggleEl(id);
+  for (const id of state.results) {
+    const el = $(id);
+    if (el) expandResult(id, el.parentElement.querySelector('.expand-btn'));
+  }
+}
+
 function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
   if (!data || !data.messages) {
     app.innerHTML = '<div class="loading">Transcript not found</div>';
@@ -1137,6 +1241,8 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
     }
   }
 
+  const transcriptKey = JSON.stringify([!!data.isCodex, projectDir, sessionId, data.agentId || null]);
+  const disclosureState = captureTranscriptDisclosures(transcriptKey);
   let html = '';
   // NOTE: the "Agent is actively working" banner is a persistent node OUTSIDE
   // #app (see index body). We must NOT recreate it here — doing so is exactly
@@ -1176,68 +1282,35 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
 
   // Store raw JSON for View JSON buttons
   window._rawJsonMap = {};
-  let _msgIdx = 0;
-
-  html += '<div class="transcript">';
-
-  for (const msg of data.messages) {
-    // Skip user messages that are purely tool results (they're shown inline with assistant)
-    if (msg.type === 'user' && !msg.text && msg.toolResults && msg.toolResults.length > 0) continue;
-    // Skip sidechain messages in main transcript
-    if (msg.isSidechain && !data.agentId) continue;
-
-    const rawKey = 'raw_' + (_msgIdx++);
+  data.messages.forEach((msg, index) => {
+    if (msg.isSidechain && !data.agentId) return;
+    if (msg.type === 'user' && !msg.text) return;
+    const rawKey = 'raw_' + index;
     if (msg._raw) {
       try { window._rawJsonMap[rawKey] = JSON.stringify(JSON.parse(msg._raw), null, 2); }
       catch { window._rawJsonMap[rawKey] = msg._raw; }
     }
+  });
 
-    if (msg.type === 'user' && msg.text) {
-      const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
-      const jsonBtn = msg._raw ? `<button class="view-json-btn" onclick="showRawJson('${rawKey}')">{ } JSON</button>` : '';
-      html += `<div class="msg user-msg">
-        <div class="msg-header"><span class="role user">User</span><span>${time}</span>${jsonBtn}</div>
-        <div class="md-content">${renderMarkdown(msg.text)}</div>
-      </div>`;
+  html += `<div class="transcript" data-transcript-key="${esc(transcriptKey)}">`;
+  let unfoldedEntries = [];
+  for (const group of groupTranscriptEntries(data)) {
+    const folded = group.activity && group.entries.length > 1;
+    if (!folded) {
+      unfoldedEntries.push(...group.entries);
+      continue;
     }
-
-    if (msg.type === 'assistant' && msg.blocks) {
-      const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
-      const modelLabel = msg.model ? ` &middot; ${esc(msg.model)}` : '';
-      // Context consumed as of this message, shown quietly next to the model.
-      const ctxTokens = usageContextTokens(msg.usage);
-      const ctxLabel = ctxTokens
-        ? ` &middot; ${ctxUsageHtml(ctxTokens, contextWindowFor(msg.model || data.model), msg.usage)}`
-        : '';
-      const jsonBtn = msg._raw ? `<button class="view-json-btn" onclick="showRawJson('${rawKey}')">{ } JSON</button>` : '';
-      html += `<div class="msg assistant-msg">
-        <div class="msg-header"><span class="role assistant">Assistant</span><span>${time}${modelLabel}${ctxLabel}</span>${jsonBtn}</div>`;
-
-      for (const block of msg.blocks) {
-        if (block.type === 'thinking') {
-          const thinkingContent = (block.content || '').trim();
-          if (thinkingContent) {
-            html += `<details class="thinking-block">
-              <summary>Thinking...</summary>
-              <div class="thinking-content">${esc(block.content)}</div>
-            </details>`;
-          } else {
-            html += `<div class="thinking-block thinking-block-empty">
-              <span class="thinking-label">Thinking...</span>
-            </div>`;
-          }
-        } else if (block.type === 'text') {
-          html += `<div class="md-content">${renderMarkdown(block.content)}</div>`;
-        } else if (block.type === 'tool_use') {
-          html += renderToolUse(block, toolResultMap, projectDir, sessionId);
-        }
-      }
-      html += '</div>';
-    }
+    html += renderTranscriptEntries(unfoldedEntries, data, toolResultMap, projectDir, sessionId);
+    unfoldedEntries = [];
+    html += `<details class="activity-group" id="activity-${group.entries[0].key}">`;
+    html += renderActivitySummary(group.entries, toolResultMap);
+    html += renderTranscriptEntries(group.entries, data, toolResultMap, projectDir, sessionId);
+    html += '</details>';
   }
-
+  html += renderTranscriptEntries(unfoldedEntries, data, toolResultMap, projectDir, sessionId);
   html += '</div>';
   app.innerHTML = html;
+  restoreTranscriptDisclosures(disclosureState);
 
   // A transcript is on screen — make the "jump to latest" button available.
   showScrollButton();
@@ -1248,16 +1321,71 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
   });
 }
 
-function renderToolUse(block, toolResultMap, projectDir, sessionId) {
+function renderTranscriptEntries(entries, data, toolResultMap, projectDir, sessionId) {
+  let html = '';
+  let assistantMsg = null;
+  for (const { msg, msgIndex, block, key } of entries) {
+    if (assistantMsg && assistantMsg !== msg) {
+      html += '</div>';
+      assistantMsg = null;
+    }
+    const rawKey = 'raw_' + msgIndex;
+
+    if (msg.type === 'user' && msg.text) {
+      const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+      const jsonBtn = msg._raw ? `<button class="view-json-btn" onclick="showRawJson('${rawKey}')">{ } JSON</button>` : '';
+      html += `<div class="msg user-msg">
+        <div class="msg-header"><span class="role user">User</span><span>${time}</span>${jsonBtn}</div>
+        <div class="md-content">${renderMarkdown(msg.text)}</div>
+      </div>`;
+    }
+
+    if (msg.type !== 'assistant') continue;
+    if (assistantMsg !== msg) {
+      assistantMsg = msg;
+      const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
+      const modelLabel = msg.model ? ` &middot; ${esc(msg.model)}` : '';
+      // Context consumed as of this message, shown quietly next to the model.
+      const ctxTokens = usageContextTokens(msg.usage);
+      const ctxLabel = ctxTokens
+        ? ` &middot; ${ctxUsageHtml(ctxTokens, contextWindowFor(msg.model || data.model), msg.usage)}`
+        : '';
+      const jsonBtn = msg._raw ? `<button class="view-json-btn" onclick="showRawJson('${rawKey}')">{ } JSON</button>` : '';
+      html += `<div class="msg assistant-msg">
+        <div class="msg-header"><span class="role assistant">Assistant</span><span>${time}${modelLabel}${ctxLabel}</span>${jsonBtn}</div>`;
+    }
+    if (block.type === 'thinking') {
+      const thinkingContent = (block.content || '').trim();
+      if (thinkingContent) {
+        html += `<details class="thinking-block" id="thinking-${key}">
+          <summary>Thinking...</summary>
+          <div class="thinking-content">${esc(block.content)}</div>
+        </details>`;
+      } else {
+        html += `<div class="thinking-block thinking-block-empty">
+          <span class="thinking-label">Thinking...</span>
+        </div>`;
+      }
+    } else if (block.type === 'text') {
+      html += `<div class="md-content">${renderMarkdown(block.content)}</div>`;
+    } else if (block.type === 'tool_use') {
+      html += renderToolUse(block, toolResultMap, projectDir, sessionId, key);
+    }
+  }
+  if (assistantMsg) html += '</div>';
+  return html;
+}
+
+function renderToolUse(block, toolResultMap, projectDir, sessionId, key) {
   // Special-case TodoWrite — render a beautiful checklist instead of raw JSON
   if ((block.name || '').toLowerCase() === 'todowrite') {
-    return renderTodoWrite(block, toolResultMap);
+    return renderTodoWrite(block, toolResultMap, key);
   }
 
   const nameClass = getToolClass(block.name);
   const icon = getToolIcon(block.name);
   const desc = getToolDesc(block);
-  const inputId = 'ti_' + (block.id || '').replace(/[^a-z0-9]/gi, '').slice(0, 12) + Math.random().toString(36).slice(2, 6);
+  const inputId = 'ti_' + key;
   const resultId = 'tr_' + inputId;
 
   let html = `<div class="tool-block" id="tool-${esc(block.id || '')}">`;
@@ -1298,7 +1426,7 @@ function renderToolUse(block, toolResultMap, projectDir, sessionId) {
   return html;
 }
 
-function renderTodoWrite(block, toolResultMap) {
+function renderTodoWrite(block, toolResultMap, key) {
   const input = block.input || {};
   const todos = Array.isArray(input.todos) ? input.todos : [];
   const result = toolResultMap.get(block.id);
@@ -1331,7 +1459,7 @@ function renderTodoWrite(block, toolResultMap) {
         ? 'All tasks completed'
         : `${total} task${total === 1 ? '' : 's'}`);
 
-  const inputId = 'ti_' + (block.id || '').replace(/[^a-z0-9]/gi, '').slice(0, 12) + Math.random().toString(36).slice(2, 6);
+  const inputId = 'ti_' + key;
 
   let html = `<div class="tool-block todo-write-block" id="tool-${esc(block.id || '')}">`;
   html += `<div class="tool-header" onclick="toggleEl('${inputId}')">
@@ -1568,6 +1696,7 @@ window.expandResult = function(id, btn) {
   const el = document.getElementById(id);
   if (el) {
     el.classList.remove('collapsed');
+    el.dataset.expandedResult = 'true';
     if (btn) btn.remove();
   }
 };
