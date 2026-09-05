@@ -11,6 +11,8 @@ Local web viewer for Claude Code transcripts from `~/.claude/projects/`.
 - Consecutive tool calls and thinking blocks collapse into a summary; expand any
   group to inspect its calls and results. Expanded details stay open during live updates.
 - Navigate from parent session into subagent transcripts (Task/Skill)
+- Sessions being written right now show a compact, pulsing "Working" pill in the
+  header with the age of the latest message; it stays visible while scrolling.
 - Search/filter projects and sessions
 - Dark theme
 

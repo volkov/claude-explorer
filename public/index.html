@@ -678,26 +678,31 @@ a:hover { text-decoration: underline; }
   50% { opacity: 0.5; }
 }
 
-#activeBanner { max-width: 960px; margin: 12px auto 0; }
-.active-banner {
-  background: var(--bg-active-banner);
-  border: 1px solid var(--accent-green);
-  border-radius: var(--radius);
-  padding: 10px 16px;
-  display: flex;
-  flex-wrap: wrap;
+/* Compact "working" pill that sits inline in the header row next to the
+   breadcrumb instead of taking a full-width line of its own. */
+.active-pill {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 4px 16px;
-  font-size: 13px;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--bg-active-banner);
   color: var(--accent-green);
-}
-.active-banner-status { display: flex; align-items: center; gap: 8px; }
-.active-banner-age { font-variant-numeric: tabular-nums; white-space: nowrap; }
-.active-banner .dot {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+  white-space: nowrap;
   flex-shrink: 0;
-  width: 8px;
-  height: 8px;
+  cursor: default;
+}
+/* Author display above would otherwise beat the UA's [hidden] { display: none }. */
+.active-pill[hidden] { display: none; }
+.active-pill-age { font-variant-numeric: tabular-nums; opacity: 0.8; }
+.active-pill-age:not(:empty)::before { content: '\00b7'; margin-right: 6px; }
+.active-pill .dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--accent-green);
   animation: pulse 2s ease-in-out infinite;
@@ -843,6 +848,12 @@ a:hover { text-decoration: underline; }
   <div class="header-inner">
     <h1><a href="#/" style="color: var(--text);">Claude Transcripts</a></h1>
     <div id="breadcrumb" class="breadcrumb"></div>
+    <!-- Compact activity pill. Lives in the sticky header (outside #app) so it
+         stays visible while scrolling and survives live transcript re-renders. -->
+    <span id="activeBanner" class="active-pill" hidden
+          title="Agent is actively working on this session; the time is the age of the latest transcript message">
+      <span class="dot" aria-hidden="true"></span>Working<span id="lastMessageAge" class="active-pill-age"></span>
+    </span>
     <div class="theme-toggle" id="themeToggle">
       <button data-theme="system" title="System theme" onclick="setTheme('system')">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
@@ -856,14 +867,6 @@ a:hover { text-decoration: underline; }
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
         <span class="theme-label">Dark</span>
       </button>
-    </div>
-  </div>
-  <!-- Keep activity visible while scrolling and outside #app so transcript
-       refreshes preserve both the indicator and its live message age. -->
-  <div id="activeBanner" hidden>
-    <div class="active-banner">
-      <span class="active-banner-status"><span class="dot" aria-hidden="true"></span>Agent is actively working on this session</span>
-      <span id="lastMessageAge" class="active-banner-age"></span>
     </div>
   </div>
 </div>
@@ -1081,17 +1084,16 @@ function stopActivePolling() {
   hideScrollButton();
 }
 
+// Compact so it fits the header pill: "12s ago", then "3m ago" from a minute on.
 function formatMessageAge(mtimeMs, now = Date.now()) {
   const seconds = Math.max(0, Math.floor((now - mtimeMs) / 1000));
-  if (seconds < 60) return `${seconds} ${seconds === 1 ? 'second' : 'seconds'} ago`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.floor(seconds / 60)}m ago`;
 }
 
 function updateMessageAge() {
   const age = document.getElementById('lastMessageAge');
-  if (age) age.textContent = _lastMessageMtimeMs === null
-    ? '' : `Last message ${formatMessageAge(_lastMessageMtimeMs)}`;
+  if (age) age.textContent = _lastMessageMtimeMs === null ? '' : formatMessageAge(_lastMessageMtimeMs);
 }
 
 function setActiveBanner(isActive, mtimeMs) {
@@ -1295,10 +1297,10 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
   const transcriptKey = JSON.stringify([!!data.isCodex, projectDir, sessionId, data.agentId || null]);
   const disclosureState = captureTranscriptDisclosures(transcriptKey);
   let html = '';
-  // NOTE: the "Agent is actively working" banner is a persistent node OUTSIDE
+  // NOTE: the "Working" activity pill is a persistent node in the header, OUTSIDE
   // #app (see index body). We must NOT recreate it here — doing so is exactly
   // what made the indicator flicker: each live refresh re-rendered an empty
-  // banner and wiped the "active" state set moments earlier by checkStatus().
+  // indicator and wiped the "active" state set moments earlier by checkStatus().
   if (bannerHtml) html += bannerHtml;
 
   // Session meta
