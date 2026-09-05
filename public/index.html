@@ -563,8 +563,35 @@ a:hover { text-decoration: underline; }
 }
 .view-json-btn:hover { color: var(--accent); border-color: var(--accent); }
 
-/* JSON Modal */
-.json-modal-overlay {
+/* Inline images: pasted screenshots and image tool results */
+.msg-images { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 2px; }
+.msg-image {
+  display: block;
+  max-width: 100%;
+  max-height: 360px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: zoom-in;
+}
+.msg-image:hover { border-color: var(--accent); }
+.msg-images.tool-result-images {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-tool-result);
+}
+.image-modal-overlay { cursor: zoom-out; }
+.image-modal-overlay img {
+  max-width: 95vw;
+  max-height: 95vh;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* JSON Modal (the image lightbox shares the overlay) */
+.json-modal-overlay, .image-modal-overlay {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
   background: var(--bg-modal-overlay);
@@ -1217,7 +1244,7 @@ function groupTranscriptEntries(data) {
       }
       group.entries.push({ msg, msgIndex, block, key: `m${msgIndex}-b${blockIndex}` });
     };
-    if ((msg.type === 'user' || msg.type === 'system') && msg.text) append(null, 0);
+    if ((msg.type === 'user' || msg.type === 'system') && hasVisibleContent(msg)) append(null, 0);
     if (msg.type === 'assistant') {
       (msg.blocks || []).forEach((block, blockIndex) => {
         if (block.type === 'text' && !(block.content || '').trim()) return;
@@ -1335,7 +1362,7 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
   window._rawJsonMap = {};
   data.messages.forEach((msg, index) => {
     if (msg.isSidechain && !data.agentId) return;
-    if ((msg.type === 'user' || msg.type === 'system') && !msg.text) return;
+    if ((msg.type === 'user' || msg.type === 'system') && !hasVisibleContent(msg)) return;
     const rawKey = 'raw_' + index;
     if (msg._raw) {
       try { window._rawJsonMap[rawKey] = JSON.stringify(JSON.parse(msg._raw), null, 2); }
@@ -1382,18 +1409,21 @@ function renderTranscriptEntries(entries, data, toolResultMap, projectDir, sessi
     }
     const rawKey = 'raw_' + msgIndex;
 
-    if ((msg.type === 'user' || msg.type === 'system') && msg.text) {
+    if ((msg.type === 'user' || msg.type === 'system') && hasVisibleContent(msg)) {
       const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
       const jsonBtn = msg._raw ? `<button class="view-json-btn" onclick="showRawJson('${rawKey}')">{ } JSON</button>` : '';
+      // A pasted screenshot may be the entire prompt — render the text part
+      // only when there is one, and the images (if any) beneath it.
+      const body = (msg.text ? `<div class="md-content">${renderMarkdown(msg.text)}</div>` : '') + renderImages(msg.images);
       if (msg.type === 'system') {
         html += `<details class="msg system-msg" id="system-${key}">
           <summary class="msg-header"><span class="role system">System</span><span>${time}</span><span>Session context</span></summary>
-          ${jsonBtn}<div class="md-content">${renderMarkdown(msg.text)}</div>
+          ${jsonBtn}${body}
         </details>`;
       } else {
         html += `<div class="msg user-msg">
           <div class="msg-header"><span class="role user">User</span><span>${time}</span>${jsonBtn}</div>
-          <div class="md-content">${renderMarkdown(msg.text)}</div>
+          ${body}
         </div>`;
       }
     }
@@ -1467,17 +1497,23 @@ function renderToolUse(block, toolResultMap, projectDir, sessionId, key) {
     </div>`;
   }
 
-  // Tool result
+  // Tool result: text (if any) followed by returned images (Read on a
+  // screenshot, browser captures, ...). An image-only result is not "(empty)".
   const result = toolResultMap.get(block.id);
   if (result) {
-    const lines = (result.content || '').split('\n');
-    const isLong = lines.length > 30;
-    const collapsed = isLong ? ' collapsed' : '';
-    const errClass = result.isError ? ' error' : '';
-    html += `<div class="tool-result${errClass}${collapsed}" id="${resultId}">${esc(result.content || '(empty)')}</div>`;
-    if (isLong) {
-      html += `<button class="expand-btn" onclick="expandResult('${resultId}', this)">Show all ${lines.length} lines</button>`;
+    const images = renderImages(result.images, 'tool-result-images');
+    const content = result.content || (images ? '' : '(empty)');
+    if (content) {
+      const lines = content.split('\n');
+      const isLong = lines.length > 30;
+      const collapsed = isLong ? ' collapsed' : '';
+      const errClass = result.isError ? ' error' : '';
+      html += `<div class="tool-result${errClass}${collapsed}" id="${resultId}">${esc(content)}</div>`;
+      if (isLong) {
+        html += `<button class="expand-btn" onclick="expandResult('${resultId}', this)">Show all ${lines.length} lines</button>`;
+      }
     }
+    html += images;
   }
 
   html += '</div>';
@@ -1643,6 +1679,23 @@ function renderMarkdown(text) {
   try { return marked.parse(text); } catch { return esc(text); }
 }
 
+// A user/system entry is visible when it carries prompt text or pasted images.
+function hasVisibleContent(msg) {
+  return !!(msg.text || (msg.images && msg.images.length));
+}
+
+// Thumbnails for images the parser normalized to { src, mediaType }. The src is
+// a data URI or URL; clicking opens the full-size image in a lightbox. The
+// onclick reads `this.src` so the (often huge) data URI is inlined only once.
+function renderImages(images, extraClass) {
+  if (!Array.isArray(images) || images.length === 0) return '';
+  const imgs = images.map((img, i) => {
+    const alt = `Image ${i + 1}${img.mediaType ? ` (${img.mediaType})` : ''}`;
+    return `<img class="msg-image" src="${esc(img.src)}" alt="${esc(alt)}" title="Click to view full size" loading="lazy" decoding="async" onclick="showImage(this.src)">`;
+  }).join('');
+  return `<div class="msg-images${extraClass ? ' ' + extraClass : ''}">${imgs}</div>`;
+}
+
 // ---- Context usage helpers ----
 // Claude transcripts don't record the context window size, so map by model id:
 // all current models (Fable 5, Opus/Sonnet 4.6+/5) have a 1M window; Haiku 4.5
@@ -1780,6 +1833,22 @@ window.showRawJson = function(key) {
   // Close on Escape key
   const handler = function(e) { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', handler); } };
   document.addEventListener('keydown', handler);
+};
+
+// Full-size image lightbox; closes on click anywhere or Escape.
+window.showImage = function(src) {
+  if (!src) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'image-modal-overlay';
+  const img = document.createElement('img');
+  img.src = src;
+  img.alt = 'Full size image';
+  overlay.appendChild(img);
+  const close = function() { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = function(e) { if (e.key === 'Escape') close(); };
+  overlay.onclick = close;
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
 };
 
 window.copyJsonContent = function(btn) {

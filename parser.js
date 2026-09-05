@@ -34,6 +34,36 @@ const ACTIVE_THRESHOLD_MS = 120000; // 2 minutes — long operations (model
 // the parent) can go a while without touching the transcript file; a wider
 // window keeps the "actively working" indicator from flapping off mid-task.
 
+// Images reach a transcript in two shapes: claude writes API content blocks
+// ({type:'image', source:{type:'base64', media_type, data}} or source
+// {type:'url', url}) both for pasted screenshots and for image tool results
+// (Read on a PNG, browser screenshots, ...); codex writes Responses-API items
+// ({type:'input_image', image_url:'data:image/png;base64,...'}). Normalize
+// them to { src, mediaType } so the renderer can drop `src` straight into an
+// <img>. Only image data URIs and http(s) URLs are accepted — transcript
+// content must not be able to smuggle other schemes into the page.
+function normalizeImage(block) {
+  if (!block || typeof block !== 'object') return null;
+  let src = null;
+  let mediaType = null;
+  const source = block.source;
+  if (source && typeof source === 'object') {
+    if (source.type === 'base64' && typeof source.data === 'string' && source.data) {
+      mediaType = source.media_type || 'image/png';
+      src = `data:${mediaType};base64,${source.data}`;
+    } else if (source.type === 'url' && typeof source.url === 'string') {
+      src = source.url;
+    }
+  } else if (typeof block.image_url === 'string') {
+    src = block.image_url;
+  }
+  if (!src) return null;
+  const dataUri = src.match(/^data:(image\/[^;,]+)[;,]/i);
+  if (dataUri) mediaType = mediaType || dataUri[1];
+  else if (!/^https?:\/\//i.test(src)) return null;
+  return { src, mediaType };
+}
+
 function humanProjectName(dirName) {
   // -Users-serg-v-some-project -> some-project
   // The home dir is known, so strip it precisely
@@ -337,16 +367,27 @@ async function parseTranscript(projectDir, sessionId, agentId) {
           for (const block of content) {
             if (block.type === 'tool_result') {
               let resultText = '';
+              const images = [];
               if (typeof block.content === 'string') {
                 resultText = block.content;
               } else if (Array.isArray(block.content)) {
-                resultText = block.content.map(c => c.text || '').join('\n');
+                const parts = [];
+                for (const c of block.content) {
+                  if (c && c.type === 'image') {
+                    const img = normalizeImage(c);
+                    if (img) images.push(img);
+                  } else {
+                    parts.push((c && c.text) || '');
+                  }
+                }
+                resultText = parts.join('\n');
               }
               const tr = {
                 toolUseId: block.tool_use_id,
                 content: resultText,
                 isError: block.is_error || false,
               };
+              if (images.length) tr.images = images;
               // Preserve structured tool result data (e.g. TodoWrite oldTodos/newTodos)
               if (obj.toolUseResult && typeof obj.toolUseResult === 'object') {
                 if (obj.toolUseResult.oldTodos || obj.toolUseResult.newTodos) {
@@ -359,6 +400,10 @@ async function parseTranscript(projectDir, sessionId, agentId) {
               msg.toolResults.push(tr);
             } else if (block.type === 'text') {
               msg.text = (msg.text || '') + block.text;
+            } else if (block.type === 'image') {
+              // Pasted screenshot; may be the whole prompt (no text at all).
+              const img = normalizeImage(block);
+              if (img) (msg.images = msg.images || []).push(img);
             }
           }
         } else if (typeof content === 'string') {
@@ -607,9 +652,29 @@ function codexToolInput(payload) {
   return { command: raw };
 }
 
-// Normalize a tool output payload to { content, isError }.
+// Normalize a tool output payload to { content, isError, images? }.
 function codexToolOutput(payload) {
   const out = payload.output;
+  if (Array.isArray(out)) {
+    // Responses-API content list: input_text parts interleaved with
+    // input_image screenshots. Never stringify the latter — that dumps
+    // megabytes of base64 into the transcript as text.
+    const parts = [];
+    const images = [];
+    for (const item of out) {
+      if (item && item.type === 'input_image') {
+        const img = normalizeImage(item);
+        if (img) images.push(img);
+      } else if (item && typeof item.text === 'string') {
+        parts.push(item.text);
+      } else if (item != null) {
+        parts.push(JSON.stringify(item));
+      }
+    }
+    const result = { content: parts.join('\n'), isError: false };
+    if (images.length) result.images = images;
+    return result;
+  }
   if (typeof out !== 'string') return { content: out == null ? '' : JSON.stringify(out), isError: false };
   if (payload.type === 'custom_tool_call_output') {
     try {
@@ -697,14 +762,18 @@ async function parseCodexRollout(sessionId) {
       const pt = p.type;
 
       if (pt === 'message') {
-        const text = (Array.isArray(p.content) ? p.content : []).map(b => b.text || '').join('');
+        const blocks = Array.isArray(p.content) ? p.content : [];
+        const text = blocks.map(b => b.text || '').join('');
         if (p.role === 'assistant') {
           const a = ensureAssistant(ts);
           if (text) a.blocks.push({ type: 'text', content: text });
         } else if (['user', 'developer', 'system'].includes(p.role)) {
           const type = p.role !== 'user' || isCodexSetupMessage(text) ? 'system' : 'user';
           closeAssistant();
-          messages.push({ type, role: type, timestamp: ts, text, toolResults: [], _raw: line });
+          const msg = { type, role: type, timestamp: ts, text, toolResults: [], _raw: line };
+          const images = blocks.filter(b => b && b.type === 'input_image').map(normalizeImage).filter(Boolean);
+          if (images.length) msg.images = images;
+          messages.push(msg);
         }
         return;
       }
@@ -728,11 +797,10 @@ async function parseCodexRollout(sessionId) {
       }
 
       if (pt === 'function_call_output' || pt === 'custom_tool_call_output') {
-        const { content, isError } = codexToolOutput(p);
         closeAssistant();
         messages.push({
           type: 'user', role: 'user', timestamp: ts, text: null,
-          toolResults: [{ toolUseId: p.call_id, content, isError }],
+          toolResults: [{ toolUseId: p.call_id, ...codexToolOutput(p) }],
         });
         return;
       }

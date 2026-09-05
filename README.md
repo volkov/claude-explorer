@@ -6,6 +6,9 @@ Local web viewer for Claude Code transcripts from `~/.claude/projects/`.
 
 - Browse all projects and sessions
 - Full transcript rendering (messages, thinking, tool calls, results)
+- Images are shown inline — screenshots pasted into a prompt and images
+  returned by tools (`Read` on a PNG, browser captures, Codex `input_image`
+  outputs); click one to view it full size.
 - Codex setup context (plugins, instructions, environment) is labeled System and
   collapsed by default; expand it to inspect the content or its original JSON.
 - Consecutive tool calls and thinking blocks collapse into a summary; expand any
