@@ -182,3 +182,46 @@ test('live disclosure restoration keeps several groups and nested details open a
   assert.deepEqual(plain(context.captureTranscriptDisclosures('session-a')), state);
   assert.equal(context.captureTranscriptDisclosures('session-b'), null);
 });
+
+test('skill loads fold to "Loaded skill <name>" and keep the body, JSON and position', () => {
+  const { context, app } = viewer();
+  const load = {
+    type: 'user', isMeta: true, skill: { name: 'linear:fetch' }, timestamp: '2026-09-05T00:56:44.777Z',
+    text: 'Base directory for this skill: /skills/fetch\n\n# Linear <Fetch>\n\nPull everything relevant.',
+    _raw: JSON.stringify({ isMeta: true, sourceToolUseID: 'skill' }),
+  };
+  const data = { messages: [
+    user('Load the ticket'), assistant(tool('skill', 'Skill')), result('skill', 'Launching skill: linear:fetch'),
+    load, assistant(tool('a'), tool('b')), result('a'), result('b'),
+  ] };
+  assert.deepEqual(plain(context.groupTranscriptEntries(data).map(g => [g.activity, g.entries.length])), [
+    [false, 1], [true, 1], [false, 1], [true, 2],
+  ]);
+  context.renderTranscriptData(data, 'project', 'session');
+  const html = app.innerHTML;
+  assert.match(html, /<details class="msg skill-msg" id="skill-m3-b0">/);
+  assert.match(html, /class="role skill">Skill<\/span>/);
+  assert.match(html, /Loaded skill <strong>linear:fetch<\/strong>/);
+  assert.match(html, /Pull everything relevant\./);
+  assert.match(html, /showRawJson\('raw_3'\)/);
+  assert.equal(JSON.parse(context._rawJsonMap.raw_3).sourceToolUseID, 'skill');
+  assert.equal((html.match(/class="msg user-msg"/g) || []).length, 1);
+  assert.equal((html.match(/class="activity-group"/g) || []).length, 1);
+  assert.ok(html.indexOf('id="skill-m3-b0"') > html.indexOf('Launching skill: linear:fetch'));
+  assert.ok(html.indexOf('id="skill-m3-b0"') < html.indexOf('id="activity-m4-b0"'));
+  assert.ok(html.indexOf('Pull everything relevant.') < html.indexOf('id="activity-m4-b0"'));
+  data.messages.push(assistant(text('Context loaded.')));
+  context.renderTranscriptData(data, 'project', 'session');
+  assert.match(app.innerHTML, /id="skill-m3-b0"/);
+});
+
+test('skill names are escaped and untagged meta prompts still render as User', () => {
+  const { context, app } = viewer();
+  context.renderTranscriptData({ messages: [
+    { ...user('Base directory for this skill: /x'), isMeta: true, skill: { name: 'a<b>' } },
+    { ...user('<system-reminder>Other agents active.</system-reminder>'), isMeta: true },
+  ] }, null, 'session');
+  assert.match(app.innerHTML, /Loaded skill <strong>a&lt;b&gt;<\/strong>/);
+  assert.equal((app.innerHTML.match(/class="msg skill-msg"/g) || []).length, 1);
+  assert.equal((app.innerHTML.match(/class="msg user-msg"/g) || []).length, 1);
+});

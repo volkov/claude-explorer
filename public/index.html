@@ -223,11 +223,15 @@ a:hover { text-decoration: underline; }
   background: var(--bg-surface);
   border-left: 3px solid var(--text-dimmer);
 }
-.system-msg > summary { cursor: pointer; }
-.system-msg:not([open]) > summary { margin-bottom: 0; }
-.system-msg > summary::before { content: '\25b6'; font-size: 9px; }
-.system-msg[open] > summary::before { content: '\25bc'; }
-.system-msg > summary::-webkit-details-marker { display: none; }
+.msg.skill-msg {
+  background: var(--bg-surface);
+  border-left: 3px solid var(--accent);
+}
+.system-msg > summary, .skill-msg > summary { cursor: pointer; }
+.system-msg:not([open]) > summary, .skill-msg:not([open]) > summary { margin-bottom: 0; }
+.system-msg > summary::before, .skill-msg > summary::before { content: '\25b6'; font-size: 9px; }
+.system-msg[open] > summary::before, .skill-msg[open] > summary::before { content: '\25bc'; }
+.system-msg > summary::-webkit-details-marker, .skill-msg > summary::-webkit-details-marker { display: none; }
 
 .msg-header {
   font-size: 11px;
@@ -247,6 +251,8 @@ a:hover { text-decoration: underline; }
 .msg-header .role.user { background: var(--bg-user-role); color: var(--accent); }
 .msg-header .role.assistant { background: var(--bg-assistant-role); color: var(--accent-green); }
 .msg-header .role.system { background: var(--bg-surface2); color: var(--text-dim); }
+.msg-header .role.skill { background: var(--tool-bg-task); color: var(--accent); }
+.skill-msg > summary strong { color: var(--text); font-weight: 500; }
 
 /* Consecutive tool calls and thinking */
 .activity-group {
@@ -1390,6 +1396,13 @@ function renderTranscriptEntries(entries, data, toolResultMap, projectDir, sessi
       if (msg.type === 'system') {
         html += `<details class="msg system-msg" id="system-${key}">
           <summary class="msg-header"><span class="role system">System</span><span>${time}</span><span>Session context</span></summary>
+          ${jsonBtn}<div class="md-content">${renderMarkdown(msg.text)}</div>
+        </details>`;
+      } else if (msg.skill) {
+        // The skill body Claude Code injects after loading a skill — fold it
+        // to one line; the instructions are a click away.
+        html += `<details class="msg skill-msg" id="skill-${key}">
+          <summary class="msg-header"><span class="role skill">Skill</span><span>${time}</span><span>Loaded skill <strong>${esc(msg.skill.name)}</strong></span></summary>
           ${jsonBtn}<div class="md-content">${renderMarkdown(msg.text)}</div>
         </details>`;
       } else {

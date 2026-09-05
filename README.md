@@ -10,6 +10,9 @@ Local web viewer for Claude Code transcripts from `~/.claude/projects/`.
   collapsed by default; expand it to inspect the content or its original JSON.
 - Consecutive tool calls and thinking blocks collapse into a summary; expand any
   group to inspect its calls and results. Expanded details stay open during live updates.
+- The skill body Claude Code injects after a `Skill` call or a typed `/skill`
+  command folds to a one-line `Loaded skill <name>`; expand it to read the
+  instructions or view the original JSON.
 - Navigate from parent session into subagent transcripts (Task/Skill)
 - Sessions being written right now show a compact, pulsing "Working" pill in the
   header with the age of the latest message; it stays visible while scrolling.
