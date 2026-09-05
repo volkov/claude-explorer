@@ -138,7 +138,7 @@ a:hover { text-decoration: underline; }
   background: var(--bg-surface);
   position: sticky; top: 0; z-index: 100;
 }
-.header-inner { max-width: 1000px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+.header-inner { max-width: 1000px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .header h1 { font-size: 16px; font-weight: 600; white-space: nowrap; }
 .breadcrumb { font-size: 13px; color: var(--text-dim); }
 .breadcrumb a { color: var(--text-dim); }
@@ -678,19 +678,24 @@ a:hover { text-decoration: underline; }
   50% { opacity: 0.5; }
 }
 
+#activeBanner { max-width: 960px; margin: 12px auto 0; }
 .active-banner {
   background: var(--bg-active-banner);
   border: 1px solid var(--accent-green);
   border-radius: var(--radius);
   padding: 10px 16px;
-  margin-bottom: 12px;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 4px 16px;
   font-size: 13px;
   color: var(--accent-green);
 }
+.active-banner-status { display: flex; align-items: center; gap: 8px; }
+.active-banner-age { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .active-banner .dot {
+  flex-shrink: 0;
   width: 8px;
   height: 8px;
   border-radius: 50%;
@@ -853,12 +858,17 @@ a:hover { text-decoration: underline; }
       </button>
     </div>
   </div>
+  <!-- Keep activity visible while scrolling and outside #app so transcript
+       refreshes preserve both the indicator and its live message age. -->
+  <div id="activeBanner" hidden>
+    <div class="active-banner">
+      <span class="active-banner-status"><span class="dot" aria-hidden="true"></span>Agent is actively working on this session</span>
+      <span id="lastMessageAge" class="active-banner-age"></span>
+    </div>
+  </div>
 </div>
 
 <div class="container">
-  <!-- Persistent host for the "Agent is actively working" banner. Lives OUTSIDE
-       #app so the live transcript re-render (app.innerHTML = ...) never wipes it. -->
-  <div id="activeBanner"></div>
   <div id="app">
     <div class="loading"><div class="spinner"></div></div>
   </div>
@@ -1055,8 +1065,12 @@ async function renderSessionList(projectDir) {
 }
 
 let _activePollingInterval = null;
+let _activePollingGeneration = 0;
+let _messageAgeInterval = null;
+let _lastMessageMtimeMs = null;
 
 function stopActivePolling() {
+  _activePollingGeneration++;
   if (_activePollingInterval) {
     clearInterval(_activePollingInterval);
     _activePollingInterval = null;
@@ -1067,17 +1081,43 @@ function stopActivePolling() {
   hideScrollButton();
 }
 
-function setActiveBanner(isActive) {
+function formatMessageAge(mtimeMs, now = Date.now()) {
+  const seconds = Math.max(0, Math.floor((now - mtimeMs) / 1000));
+  if (seconds < 60) return `${seconds} ${seconds === 1 ? 'second' : 'seconds'} ago`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`;
+}
+
+function updateMessageAge() {
+  const age = document.getElementById('lastMessageAge');
+  if (age) age.textContent = _lastMessageMtimeMs === null
+    ? '' : `Last message ${formatMessageAge(_lastMessageMtimeMs)}`;
+}
+
+function setActiveBanner(isActive, mtimeMs) {
+  if (!isActive) {
+    hideActiveBanner();
+    return;
+  }
   const banner = document.getElementById('activeBanner');
   if (!banner) return;
-  banner.innerHTML = isActive
-    ? '<div class="active-banner"><span class="dot"></span> Agent is actively working on this session</div>'
-    : '';
+  banner.hidden = false;
+  _lastMessageMtimeMs = Number.isFinite(mtimeMs) && mtimeMs > 0 ? mtimeMs : null;
+  updateMessageAge();
+  if (_messageAgeInterval === null) {
+    _messageAgeInterval = setInterval(updateMessageAge, 1000);
+  }
 }
 
 function hideActiveBanner() {
+  if (_messageAgeInterval !== null) {
+    clearInterval(_messageAgeInterval);
+    _messageAgeInterval = null;
+  }
+  _lastMessageMtimeMs = null;
+  updateMessageAge();
   const banner = document.getElementById('activeBanner');
-  if (banner) banner.innerHTML = '';
+  if (banner) banner.hidden = true;
 }
 
 function showScrollButton() {
@@ -1806,7 +1846,7 @@ function startActivePolling(projectDir, sessionId) {
     transcriptUrl: `/api/transcript/${encodeURIComponent(projectDir)}/${sessionId}`,
     routeMatches: () => {
       const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
-      return parts[0] === 'session' && parts[1] && parts[2];
+      return parts[0] === 'session' && parts[1] === encodeURIComponent(projectDir) && parts[2] === sessionId;
     },
     render: (data) => renderTranscriptData(data, projectDir, sessionId),
   });
@@ -1819,22 +1859,26 @@ function startCodexPolling(sessionId) {
     transcriptUrl: `/api/codex/transcript/${encodeURIComponent(sessionId)}`,
     routeMatches: () => {
       const parts = (location.hash.slice(1) || '/').split('/').filter(Boolean);
-      return parts[0] === 'codex' && parts[1];
+      return parts[0] === 'codex' && parts[1] === encodeURIComponent(sessionId);
     },
     render: (data) => renderTranscriptData(data, null, sessionId),
   });
 }
 
 function _startPolling(opts) {
+  const generation = _activePollingGeneration;
+  const isCurrent = () => generation === _activePollingGeneration && opts.routeMatches();
+  if (!isCurrent()) return;
   let wasActive = false;
   let isRefreshing = false;
   let lastMtimeMs = 0;
 
   async function refresh(mtimeMs, autoScroll) {
-    if (!opts.routeMatches()) return;
+    if (!isCurrent()) return;
     isRefreshing = true;
     try {
       const data = await api(opts.transcriptUrl);
+      if (!isCurrent()) return;
       opts.render(data);
       lastMtimeMs = mtimeMs;
       // Auto-scroll to bottom unless user manually scrolled up
@@ -1845,12 +1889,13 @@ function _startPolling(opts) {
   }
 
   async function checkStatus() {
-    if (isRefreshing) return;
+    if (!isCurrent() || isRefreshing) return;
     try {
       const { isActive, mtimeMs } = await api(opts.statusUrl);
+      if (!isCurrent()) return;
       // The banner is a persistent node outside #app, so it survives live
       // transcript re-renders and simply reflects the latest polled state.
-      setActiveBanner(isActive);
+      setActiveBanner(isActive, mtimeMs);
 
       // Refresh transcript while agent is active, but only if file actually changed
       if (isActive && mtimeMs > lastMtimeMs) {
