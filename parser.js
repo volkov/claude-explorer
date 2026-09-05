@@ -193,6 +193,46 @@ async function getMaxMtimeForSession(projectDir, sessionId) {
   return maxMtime;
 }
 
+// Loading a skill (a Skill tool call or a user-typed /skill command) appends the
+// whole skill body to the transcript as a meta user message. Tag those so the
+// viewer can fold them to "Loaded skill <name>" instead of rendering pages of
+// instructions as a User prompt. Detection is deliberately narrow: only meta
+// messages that reference a Skill tool_use or start with the skill preamble
+// qualify — other meta messages (reminders, caveats, images) stay as they are.
+const SKILL_BODY_RE = /^\s*Base directory for this skill:\s*(\S+)/;
+const SLASH_COMMAND_RE = /<command-name>\s*\/?([^<\s]+)\s*<\/command-name>/;
+
+function tagSkillLoads(messages, toolUseBlocks) {
+  // Name of the nearest preceding trigger (Skill call or /command). Older
+  // transcripts lack sourceToolUseID, and /commands never have one.
+  let lastSkillName = null;
+  for (const msg of messages) {
+    if (msg.type === 'assistant') {
+      for (const block of msg.blocks || []) {
+        if (block.type === 'tool_use' && (block.name || '').toLowerCase() === 'skill') {
+          lastSkillName = (block.input && block.input.skill) || null;
+        }
+      }
+      continue;
+    }
+    if (msg.type !== 'user' || !msg.text) continue;
+    if (!msg.isMeta) {
+      const command = msg.text.match(SLASH_COMMAND_RE);
+      if (command) lastSkillName = command[1];
+      continue;
+    }
+    const source = msg.sourceToolUseId ? toolUseBlocks.get(msg.sourceToolUseId) : null;
+    const fromSkillTool = !!source && (source.name || '').toLowerCase() === 'skill';
+    const body = msg.text.match(SKILL_BODY_RE);
+    if (!fromSkillTool && !body) continue;
+    const name = (fromSkillTool && source.input && source.input.skill)
+      || lastSkillName
+      || (body && path.basename(body[1]))
+      || 'skill';
+    msg.skill = { name };
+  }
+}
+
 async function parseTranscript(projectDir, sessionId, agentId) {
   const cacheKey = `${projectDir}/${sessionId}/${agentId || 'main'}`;
 
@@ -364,6 +404,10 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         } else if (typeof content === 'string') {
           msg.text = content;
         }
+        // Claude Code marks injected context (skill bodies, caveats, reminders)
+        // as meta; an injected skill body also points back at its Skill call.
+        if (obj.isMeta) msg.isMeta = true;
+        if (obj.sourceToolUseID) msg.sourceToolUseId = obj.sourceToolUseID;
       }
 
       messages.push(msg);
@@ -471,6 +515,8 @@ async function parseTranscript(projectDir, sessionId, agentId) {
           }
         }
       }
+
+      tagSkillLoads(messages, toolUseBlocks);
 
       const result = {
         ...sessionMeta,
