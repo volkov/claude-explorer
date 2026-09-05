@@ -47,12 +47,20 @@ function viewer() {
   };
 }
 
+test('activity pill sits inline in the header row, not on a line of its own', () => {
+  const headerRow = html.match(/<div class="header-inner">([\s\S]*?)<div class="theme-toggle"/)[1];
+  assert.match(headerRow, /id="breadcrumb"[\s\S]*id="activeBanner" class="active-pill" hidden/);
+  assert.doesNotMatch(headerRow, /class="active-banner"/, 'old full-width banner markup must be gone');
+  // The pill sets its own display, so the UA's [hidden] rule alone would not hide it.
+  assert.match(html, /\.active-pill\[hidden\]\s*\{\s*display:\s*none;?\s*\}/);
+});
+
 test('message age changes from seconds to minutes and clamps clock skew', () => {
   const { context } = viewer();
   for (const [elapsed, expected] of [
-    [-1000, '0 seconds ago'], [999, '0 seconds ago'], [1000, '1 second ago'],
-    [59_999, '59 seconds ago'], [60_000, '1 minute ago'],
-    [119_999, '1 minute ago'], [120_000, '2 minutes ago'],
+    [-1000, '0s ago'], [999, '0s ago'], [1000, '1s ago'],
+    [59_999, '59s ago'], [60_000, '1m ago'],
+    [119_999, '1m ago'], [120_000, '2m ago'],
   ]) {
     assert.equal(context.formatMessageAge(1_000_000, 1_000_000 + elapsed), expected);
   }
@@ -62,15 +70,15 @@ test('counter ticks between polls, resets on new output, and stops when hidden',
   const { context, banner, age, timers, advance, tick } = viewer();
   context.setActiveBanner(true, 999_000);
   assert.equal(banner.hidden, false);
-  assert.equal(age.textContent, 'Last message 1 second ago');
+  assert.equal(age.textContent, '1s ago');
   advance(1000);
   tick(1000);
-  assert.equal(age.textContent, 'Last message 2 seconds ago');
+  assert.equal(age.textContent, '2s ago');
 
   context.setActiveBanner(true, 999_000);
   assert.equal(timers.size, 1, 'status polling must reuse the age timer');
   context.setActiveBanner(true, 1_001_000);
-  assert.equal(age.textContent, 'Last message 0 seconds ago');
+  assert.equal(age.textContent, '0s ago');
   context.setActiveBanner(false, 1_001_000);
   assert.equal(banner.hidden, true);
   assert.equal(age.textContent, '');
@@ -110,7 +118,7 @@ test('Claude and Codex polls pass the activity timestamp to the banner', async (
     else context.startActivePolling('project', 'session-a');
     await settle();
     assert.equal(banner.hidden, false);
-    assert.equal(age.textContent, 'Last message 1 minute ago');
+    assert.equal(age.textContent, '1m ago');
     assert.equal(calls[0], codex ? '/api/codex/status/session-a' : '/api/status/project/session-a');
     assert.equal(timers.size, 2);
 
