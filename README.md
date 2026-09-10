@@ -16,6 +16,8 @@ Local web viewer for Claude Code transcripts from `~/.claude/projects/`.
 - The skill body Claude Code injects after a `Skill` call or a typed `/skill`
   command folds to a one-line `Loaded skill <name>`; expand it to read the
   instructions or view the original JSON.
+- Long prompts show only their first ~10 lines with a **Show full prompt**
+  button; an opened prompt stays open during live updates.
 - Navigate from parent session into subagent transcripts (Task/Skill)
 - Sessions being written right now show a compact, pulsing "Working" pill in the
   header with the age of the latest message; it stays visible while scrolling.

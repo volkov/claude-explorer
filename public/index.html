@@ -214,6 +214,24 @@ a:hover { text-decoration: underline; }
   background: var(--bg-user);
   border-left: 3px solid var(--accent);
 }
+/* Long prompts show about their first ten lines; the rest is a click away. */
+.prompt-body.collapsed {
+  max-height: calc(10 * 1.65em); /* ten .md-content lines */
+  overflow: hidden;
+  position: relative;
+}
+.prompt-body.collapsed::after {
+  content: '';
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 48px;
+  background: linear-gradient(transparent, var(--bg-user));
+}
+.user-msg > .expand-btn {
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
 
 .msg.assistant-msg {
   background: var(--bg-surface);
@@ -1397,6 +1415,7 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
   html += '</div>';
   app.innerHTML = html;
   restoreTranscriptDisclosures(disclosureState);
+  fitCollapsedPrompts();
 
   // A transcript is on screen — make the "jump to latest" button available.
   showScrollButton();
@@ -1422,11 +1441,12 @@ function renderTranscriptEntries(entries, data, toolResultMap, projectDir, sessi
       const jsonBtn = msg._raw ? `<button class="view-json-btn" onclick="showRawJson('${rawKey}')">{ } JSON</button>` : '';
       // A pasted screenshot may be the entire prompt — render the text part
       // only when there is one, and the images (if any) beneath it.
-      const body = (msg.text ? `<div class="md-content">${renderMarkdown(msg.text)}</div>` : '') + renderImages(msg.images);
+      const images = renderImages(msg.images);
       if (msg.type === 'system') {
+        const text = msg.text ? `<div class="md-content">${renderMarkdown(msg.text)}</div>` : '';
         html += `<details class="msg system-msg" id="system-${key}">
           <summary class="msg-header"><span class="role system">System</span><span>${time}</span><span>Session context</span></summary>
-          ${jsonBtn}${body}
+          ${jsonBtn}${text}${images}
         </details>`;
       } else if (msg.skill) {
         // The skill body Claude Code injects after loading a skill — fold it
@@ -1438,7 +1458,7 @@ function renderTranscriptEntries(entries, data, toolResultMap, projectDir, sessi
       } else {
         html += `<div class="msg user-msg">
           <div class="msg-header"><span class="role user">User</span><span>${time}</span>${jsonBtn}</div>
-          ${body}
+          ${renderPromptText(msg.text, key)}${images}
         </div>`;
       }
     }
@@ -1694,6 +1714,37 @@ function renderMarkdown(text) {
   try { return marked.parse(text); } catch { return esc(text); }
 }
 
+// Long prompts (task briefs, pasted logs) would push the reply off screen, so
+// show about the first ten lines and offer the rest on click. The cut is
+// visual (CSS max-height) so markdown is never sliced mid-block, and
+// fitCollapsedPrompts() lifts it once layout shows the text fits after all.
+const PROMPT_PREVIEW_LINES = 10;
+const PROMPT_PREVIEW_CHARS = 1000; // a single paragraph can wrap past ten lines too
+const PROMPT_FOLD_SLACK_PX = 24; // hiding less than a line is not worth a button
+
+function renderPromptText(text, key) {
+  if (!text) return '';
+  const lines = text.split('\n').length;
+  if (lines <= PROMPT_PREVIEW_LINES && text.length <= PROMPT_PREVIEW_CHARS) {
+    return `<div class="md-content">${renderMarkdown(text)}</div>`;
+  }
+  const id = `prompt-${key}`;
+  const size = lines > 1 ? `${lines} lines` : `${text.length} chars`;
+  return `<div class="md-content prompt-body collapsed" id="${id}">${renderMarkdown(text)}</div>
+          <button class="expand-btn" onclick="expandResult('${id}', this)">Show full prompt (${size})</button>`;
+}
+
+function fitCollapsedPrompts() {
+  for (const el of document.querySelectorAll('.prompt-body.collapsed')) {
+    // Hidden elements measure 0×0 — leave those folded.
+    if (el.clientHeight > 0 && el.scrollHeight - el.clientHeight <= PROMPT_FOLD_SLACK_PX) {
+      el.classList.remove('collapsed');
+      const btn = el.parentElement.querySelector('.expand-btn');
+      if (btn) btn.remove();
+    }
+  }
+}
+
 // A user/system entry is visible when it carries prompt text or pasted images.
 function hasVisibleContent(msg) {
   return !!(msg.text || (msg.images && msg.images.length));
@@ -1818,6 +1869,8 @@ window.copyPath = function(btn, path) {
   });
 };
 
+// Opens a folded block (long tool result or long prompt) and marks it so live
+// refreshes keep it open — see captureTranscriptDisclosures().
 window.expandResult = function(id, btn) {
   const el = document.getElementById(id);
   if (el) {
