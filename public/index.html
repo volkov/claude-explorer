@@ -818,6 +818,9 @@ a:hover { text-decoration: underline; }
 .ctx-usage.warn { color: var(--accent-orange); }
 .ctx-usage.crit { color: var(--accent-red); }
 
+/* Reasoning effort — same understated tone as the context usage. */
+.effort-level { color: var(--text-dimmer); cursor: default; }
+
 /* File path row */
 .file-path-row {
   background: var(--bg-surface);
@@ -1372,7 +1375,10 @@ function renderTranscriptData(data, projectDir, sessionId, bannerHtml) {
       output_tokens: data.context.outputTokens,
     };
     const modelPart = ctxModel ? `<strong>Model:</strong> ${esc(ctxModel)} &middot; ` : `<strong>Context:</strong> `;
-    meta.push(`<span>${modelPart}${ctxUsageHtml(data.context.total, win, usage)}</span>`);
+    const effortPart = data.effort ? `${effortHtml(data.effort)} &middot; ` : '';
+    meta.push(`<span>${modelPart}${effortPart}${ctxUsageHtml(data.context.total, win, usage)}</span>`);
+  } else if (data.effort) {
+    meta.push(`<span><strong>Effort:</strong> ${effortHtml(data.effort)}</span>`);
   }
   if (meta.length) html += `<div class="session-meta">${meta.join('')}</div>`;
 
@@ -1468,6 +1474,7 @@ function renderTranscriptEntries(entries, data, toolResultMap, projectDir, sessi
       assistantMsg = msg;
       const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : '';
       const modelLabel = msg.model ? ` &middot; ${esc(msg.model)}` : '';
+      const effortLabel = msg.effort ? ` &middot; ${effortHtml(msg.effort)}` : '';
       // Context consumed as of this message, shown quietly next to the model.
       const ctxTokens = usageContextTokens(msg.usage);
       const ctxLabel = ctxTokens
@@ -1475,7 +1482,7 @@ function renderTranscriptEntries(entries, data, toolResultMap, projectDir, sessi
         : '';
       const jsonBtn = msg._raw ? `<button class="view-json-btn" onclick="showRawJson('${rawKey}')">{ } JSON</button>` : '';
       html += `<div class="msg assistant-msg">
-        <div class="msg-header"><span class="role assistant">Assistant</span><span>${time}${modelLabel}${ctxLabel}</span>${jsonBtn}</div>`;
+        <div class="msg-header"><span class="role assistant">Assistant</span><span>${time}${modelLabel}${effortLabel}${ctxLabel}</span>${jsonBtn}</div>`;
     }
     if (block.type === 'thinking') {
       const thinkingContent = (block.content || '').trim();
@@ -1772,6 +1779,11 @@ const CONTEXT_WINDOWS = [
   ['claude-haiku', 200000],
   ['claude-3', 200000],
 ];
+
+// Reasoning effort the model ran at (low … max; Codex also has e.g. "turbo").
+function effortHtml(effort) {
+  return `<span class="effort-level" title="Reasoning effort">${esc(effort)} effort</span>`;
+}
 
 function contextWindowFor(model) {
   const m = (model || '').toLowerCase();

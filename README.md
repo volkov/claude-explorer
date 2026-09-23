@@ -18,6 +18,9 @@ Local web viewer for Claude Code transcripts from `~/.claude/projects/`.
   instructions or view the original JSON.
 - Long prompts show only their first ~10 lines with a **Show full prompt**
   button; an opened prompt stays open during live updates.
+- The reasoning effort (`low` … `max`) is shown next to the model, both in the
+  session header and on every assistant message (Claude Code: `perTurnEffort`
+  / `effort`; Codex: `turn_context` effort).
 - Navigate from parent session into subagent transcripts (Task/Skill)
 - Sessions being written right now show a compact, pulsing "Working" pill in the
   header with the age of the latest message; it stays visible while scrolling.
