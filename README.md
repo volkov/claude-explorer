@@ -23,7 +23,7 @@ Local web viewer for Claude Code transcripts from `~/.claude/projects/`.
   / `effort`; Codex: `turn_context` effort).
 - The session name — set with `/rename` or generated automatically by Claude
   Code — labels the session in the project list (short id dimmed beside it)
-  and heads the transcript, tagged `renamed` or `auto`.
+  and ends the breadcrumb of an open session, tagged `renamed` or `auto`.
 - Navigate from parent session into subagent transcripts (Task/Skill)
 - Sessions being written right now show a compact, pulsing "Working" pill in the
   header with the age of the latest message; it stays visible while scrolling.
