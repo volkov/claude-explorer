@@ -131,7 +131,7 @@ function viewer(sessions = []) {
   });
   context.window = context;
   vm.runInContext(script, context);
-  return { context, app: elements.app };
+  return { context, app: elements.app, elements };
 }
 const session = extra => ({ sessionId: '0123456789abcdef', slug: '01234567', timestamp, fileSize: 2048, subagentCount: 0, isActive: false, ...extra });
 
@@ -150,16 +150,20 @@ test('session list: the name is the row label, escaped, with the short id dimmed
   assert.ok(!rows[2].includes('session-name'));
 });
 
-test('transcript header: the name is the heading, tagged with how it was set', () => {
-  let { context, app } = viewer();
-  context.renderTranscriptData({ title: 'Fix <login>', titleSource: 'custom', messages: [] }, 'project', 'session');
-  assert.ok(app.innerHTML.includes('<h2 class="session-title">Fix &lt;login&gt;<span class="title-source" title="Name set with /rename">renamed</span></h2>'));
+test('transcript header: the name is the last breadcrumb segment, on the same line, tagged with how it was set', () => {
+  let { context, app, elements } = viewer();
+  context.renderSessionData({ title: 'Fix <login>', titleSource: 'custom', messages: [] }, 'project', '0123456789abcdef');
+  const crumb = elements.breadcrumb.innerHTML;
+  assert.ok(crumb.includes('<span>/</span><span class="crumb-session" title="Fix &lt;login&gt; · 0123456789abcdef">Fix &lt;login&gt;</span><span class="title-source" title="Name set with /rename">renamed</span>'), crumb);
+  assert.ok(!crumb.includes('Session'), 'no generic "Session" crumb');
+  assert.ok(!app.innerHTML.includes('Fix &lt;login&gt;'), 'no separate heading in the transcript body');
 
-  ({ context, app } = viewer());
-  context.renderTranscriptData({ title: 'Generated', titleSource: 'ai', messages: [] }, 'project', 'session');
-  assert.ok(app.innerHTML.includes('<h2 class="session-title">Generated<span class="title-source" title="Name generated automatically by Claude Code">auto</span></h2>'));
+  ({ context, elements } = viewer());
+  context.renderSessionData({ title: 'Generated', titleSource: 'ai', messages: [] }, 'project', '0123456789abcdef');
+  assert.ok(elements.breadcrumb.innerHTML.endsWith('>Generated</span><span class="title-source" title="Name generated automatically by Claude Code">auto</span>'));
 
-  ({ context, app } = viewer());
-  context.renderTranscriptData({ messages: [] }, 'project', 'session');
-  assert.ok(!app.innerHTML.includes('session-title'));
+  ({ context, elements } = viewer());
+  context.renderSessionData({ messages: [] }, 'project', '0123456789abcdef');
+  assert.ok(elements.breadcrumb.innerHTML.endsWith('<span>/</span><span class="crumb-session crumb-id" title="0123456789abcdef">01234567</span>'), 'unnamed: the short id');
+  assert.ok(!elements.breadcrumb.innerHTML.includes('title-source'));
 });
