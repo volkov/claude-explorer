@@ -154,6 +154,13 @@ async function listSessions(projectDir) {
   return sessions;
 }
 
+// Claude Code stamps each assistant entry with the reasoning effort it ran at:
+// `perTurnEffort` is what that turn actually used, `effort` the session setting
+// (older versions write only the latter).
+function claudeEffort(obj) {
+  return obj.perTurnEffort || obj.effort || undefined;
+}
+
 async function getSessionMeta(filePath) {
   return new Promise((resolve) => {
     const meta = {};
@@ -300,6 +307,9 @@ async function parseTranscript(projectDir, sessionId, agentId) {
   // context automatically, so no compact-marker handling is needed.
   let lastUsage = null;
   let lastUsageModel = null;
+  // Reasoning effort of the latest assistant turn on this transcript's own
+  // chain (Claude Code can change it mid-session via /effort).
+  let lastEffort = null;
 
   return new Promise((resolve) => {
     const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
@@ -345,6 +355,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         timestamp: obj.timestamp,
         role: obj.message?.role || obj.type,
         model: obj.message?.model,
+        effort: claudeEffort(obj),
         isSidechain: obj.isSidechain,
         agentId: obj.agentId,
         _raw: line,
@@ -366,6 +377,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
 
       if (msg.type === 'assistant') {
         msg.blocks = [];
+        if (msg.effort && (agentId || !obj.isSidechain)) lastEffort = msg.effort;
         if (Array.isArray(content)) {
           for (const block of content) {
             if (block.type === 'thinking') {
@@ -569,6 +581,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         messages,
         subagents,
         agentId: agentId || null,
+        effort: lastEffort,
         context: lastUsage ? {
           inputTokens: lastUsage.input_tokens || 0,
           cacheCreationTokens: lastUsage.cache_creation_input_tokens || 0,
@@ -761,6 +774,7 @@ async function parseCodexRollout(sessionId) {
   const messages = [];
   const sessionMeta = { sessionId };
   let model = null;
+  let effort = null;
   let currentAssistant = null; // open assistant "response" bubble
   // Codex rollouts report context usage (and the model's context window!) in
   // event_msg/token_count entries; keep the latest one for the header gauge.
@@ -769,7 +783,7 @@ async function parseCodexRollout(sessionId) {
   function closeAssistant() { currentAssistant = null; }
   function ensureAssistant(ts) {
     if (!currentAssistant) {
-      currentAssistant = { type: 'assistant', role: 'assistant', timestamp: ts, model, blocks: [] };
+      currentAssistant = { type: 'assistant', role: 'assistant', timestamp: ts, model, effort, blocks: [] };
       messages.push(currentAssistant);
     }
     return currentAssistant;
@@ -794,6 +808,9 @@ async function parseCodexRollout(sessionId) {
       }
       if (obj.type === 'turn_context') {
         if (p.model) { model = p.model; if (!sessionMeta.model) sessionMeta.model = p.model; }
+        // Reasoning effort is per turn; older rollouts only carry it inside
+        // collaboration_mode, and some record none at all (model default).
+        effort = p.effort || p.collaboration_mode?.settings?.reasoning_effort || null;
         return;
       }
       // event_msg duplicates response_item content in a lossy form — ignore it
@@ -868,7 +885,7 @@ async function parseCodexRollout(sessionId) {
           };
         }
       }
-      const result = { ...sessionMeta, filePath, messages, subagents: [], agentId: null, isCodex: true, context };
+      const result = { ...sessionMeta, filePath, messages, subagents: [], agentId: null, isCodex: true, effort, context };
       cacheSet(cacheKey, result, stat.mtimeMs);
       resolve(result);
     });
