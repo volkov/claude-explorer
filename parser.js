@@ -135,10 +135,13 @@ async function listSessions(projectDir) {
     // still actively running.
     const maxMtime = await getMaxMtimeForSession(projectDir, sessionId);
     const isActive = (Date.now() - maxMtime) < ACTIVE_THRESHOLD_MS;
+    const { title, titleSource } = await readSessionTitle(filePath, stat);
 
     sessions.push({
       sessionId,
       slug: meta.slug || sessionId.slice(0, 8),
+      title,
+      titleSource,
       timestamp: meta.timestamp || stat.mtime.toISOString(),
       cwd: meta.cwd,
       version: meta.version,
@@ -159,6 +162,88 @@ async function listSessions(projectDir) {
 // (older versions write only the latter).
 function claudeEffort(obj) {
   return obj.perTurnEffort || obj.effort || undefined;
+}
+
+// Claude Code names a session two ways and records both as their own transcript
+// entries: `/rename` writes {type:'custom-title', customTitle}, and the title
+// it generates itself from the first exchange lands as {type:'ai-title',
+// aiTitle}. Both are re-appended on every turn (alongside an 'agent-name' twin
+// of the custom title), so the latest entry of each kind is the current one.
+// A custom title always beats the generated one; a cleared one ("") falls back.
+function titleEntry(obj) {
+  if (!obj || typeof obj !== 'object') return null;
+  if (obj.type === 'custom-title') return { source: 'custom', name: obj.customTitle };
+  if (obj.type === 'ai-title') return { source: 'ai', name: obj.aiTitle };
+  return null;
+}
+
+function titleTracker() {
+  const latest = { custom: '', ai: '' };
+  return {
+    // Returns true when the entry was a title entry (callers skip it as a message).
+    note(obj) {
+      const entry = titleEntry(obj);
+      if (!entry) return false;
+      latest[entry.source] = typeof entry.name === 'string' ? entry.name.trim() : '';
+      return true;
+    },
+    result() {
+      for (const source of ['custom', 'ai']) {
+        if (latest[source]) return { title: latest[source], titleSource: source };
+      }
+      return { title: null, titleSource: null };
+    },
+  };
+}
+
+// The session list wants the title without parsing whole transcripts (megabytes
+// each). Title entries sit near the end of the file because they are rewritten
+// every turn, so read the tail and widen only when nothing turns up. A cut can
+// land inside the rename burst (custom-title, ai-title, agent-name written
+// back-to-back) and hide the custom title while exposing the generated one, so
+// a hit right after the cut also widens. Results are cached per file by
+// mtime/size — listing a project must not re-read every tail on each visit.
+const TITLE_TAIL_BYTES = 64 * 1024;
+const TITLE_CACHE_MAX = 1000;
+const titleCache = new Map(); // filePath -> { mtimeMs, size, value }
+
+async function readTail(filePath, size, bytes) {
+  const start = Math.max(0, size - bytes);
+  const fh = await fs.promises.open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(size - start);
+    const { bytesRead } = await fh.read(buf, 0, buf.length, start);
+    return { start, text: buf.toString('utf8', 0, bytesRead) };
+  } finally {
+    await fh.close();
+  }
+}
+
+async function readSessionTitle(filePath, stat) {
+  const cached = titleCache.get(filePath);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached.value;
+
+  let value = { title: null, titleSource: null };
+  for (let bytes = TITLE_TAIL_BYTES; ; bytes *= 4) {
+    const { start, text } = await readTail(filePath, stat.size, bytes);
+    const lines = text.split('\n');
+    if (start > 0) lines.shift(); // partial first line
+    const titles = titleTracker();
+    let firstHit = -1;
+    lines.forEach((line, i) => {
+      if (!line.includes('"type":"custom-title"') && !line.includes('"type":"ai-title"')) return;
+      let obj;
+      try { obj = JSON.parse(line); } catch { return; }
+      if (titles.note(obj) && firstHit < 0) firstHit = i;
+    });
+    value = titles.result();
+    const splitBurst = start > 0 && firstHit >= 0 && firstHit < 2;
+    if (start === 0 || (value.title && !splitBurst)) break;
+  }
+
+  if (titleCache.size >= TITLE_CACHE_MAX) titleCache.delete(titleCache.keys().next().value);
+  titleCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, value });
+  return value;
 }
 
 async function getSessionMeta(filePath) {
@@ -310,6 +395,8 @@ async function parseTranscript(projectDir, sessionId, agentId) {
   // Reasoning effort of the latest assistant turn on this transcript's own
   // chain (Claude Code can change it mid-session via /effort).
   let lastEffort = null;
+  // Session name: /rename or the automatically generated title.
+  const titles = titleTracker();
 
   return new Promise((resolve) => {
     const stream = fs.createReadStream(filePath, { encoding: 'utf8' });
@@ -324,6 +411,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
       if (obj.type === 'file-history-snapshot') return;
       if (obj.type === 'system') return;
       if (obj.type === 'last-prompt') return;
+      if (titles.note(obj)) return;
 
       // Extract session metadata incrementally (field by field)
       // This ensures metadata is captured even when queue-operation
@@ -581,6 +669,7 @@ async function parseTranscript(projectDir, sessionId, agentId) {
         messages,
         subagents,
         agentId: agentId || null,
+        ...titles.result(),
         effort: lastEffort,
         context: lastUsage ? {
           inputTokens: lastUsage.input_tokens || 0,
