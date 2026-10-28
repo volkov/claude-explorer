@@ -626,8 +626,8 @@ async function parseTranscript(projectDir, sessionId, agentId) {
             if (block.type !== 'tool_use') continue;
             if (block.agentLink) continue;
             const name = (block.name || '').toLowerCase();
-            // Only Skill / Task can spawn a subagent transcript.
-            if (name !== 'skill' && name !== 'task') continue;
+            // Only Skill / Task / Agent can spawn a subagent transcript.
+            if (name !== 'skill' && name !== 'task' && name !== 'agent') continue;
             let bestId = null;
             let bestDelta = Infinity;
             for (const [agId, firstTs] of subagentFirstTs) {

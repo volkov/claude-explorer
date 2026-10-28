@@ -302,6 +302,34 @@ a:hover { text-decoration: underline; }
 .activity-hide, .activity-group[open] > summary .activity-show { display: none; }
 .activity-group[open] > summary .activity-hide { display: inline; }
 .activity-group[open] > summary { border-bottom: 1px solid var(--border); }
+/* With a chip row, keep the disclosure marker on the first line. */
+.activity-summary:has(.activity-agents) { vertical-align: baseline; }
+.activity-agents {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.subagent-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 8px;
+  background: var(--bg-subagent);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  color: var(--accent);
+  font-weight: 500;
+  transition: background 0.15s;
+}
+a.subagent-chip:hover { background: var(--bg-subagent-hover); text-decoration: none; }
+.subagent-chip.unlinked { border-style: dashed; }
+.subagent-chip.error { border-color: var(--accent-red); color: var(--accent-red); }
+.subagent-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-chip-kind { color: var(--text-dim); font-weight: 400; white-space: nowrap; }
+.subagent-chip-icon, .subagent-chip-arrow { flex: none; }
 
 /* Thinking */
 .thinking-block {
@@ -343,6 +371,8 @@ a:hover { text-decoration: underline; }
   background: var(--bg-tool);
   overflow: hidden;
 }
+.tool-block.subagent-run { border-color: var(--accent); border-left-width: 3px; }
+.tool-block.subagent-run > .tool-header { background: var(--bg-subagent); }
 .tool-header {
   padding: 6px 10px;
   display: flex;
@@ -1305,12 +1335,43 @@ function renderActivitySummary(entries, toolResultMap) {
     ? [...toolCounts].map(([name, count]) => count > 1 ? `${name} ×${count}` : name).join(', ')
     : (entries.find(entry => (entry.block.content || '').trim())?.block.content || '').replace(/\s+/g, ' ').slice(0, 160);
   const errors = tools.filter(({ block }) => toolResultMap.get(block.id)?.isError).length;
+  // Subagent runs stay folded inside the group, but each gets its own chip on
+  // the summary line so they can be told apart from ordinary tool calls.
+  const agents = tools.filter(({ block }) => isSubagentRun(block));
+  const agentChips = agents.length
+    ? `<span class="activity-agents">${agents.map(({ block }) => renderSubagentChip(block, toolResultMap)).join('')}</span>`
+    : '';
   return `<summary><span class="activity-summary">
     <span class="activity-count">${counts.join(' · ')}</span>
     <span class="activity-preview">${esc(preview)}</span>
     ${errors ? `<span class="activity-errors">${errors} error${errors === 1 ? '' : 's'}</span>` : ''}
     <span class="activity-show">Show details</span><span class="activity-hide">Hide details</span>
+    ${agentChips}
   </span></summary>`;
+}
+
+// Agent/Task calls spawn a subagent; so does a forked Skill, which we only
+// recognise by the subagent transcript the parser linked to it.
+function isSubagentRun(block) {
+  const n = (block.name || '').toLowerCase();
+  return n === 'agent' || n === 'task' || !!block.agentLink;
+}
+
+function renderSubagentChip(block, toolResultMap) {
+  const input = block.input || {};
+  const label = input.description || input.skill
+    || String(input.prompt || '').replace(/\s+/g, ' ').trim().slice(0, 80) || block.name || 'Subagent';
+  const kind = input.subagent_type || ((block.name || '').toLowerCase() === 'skill' ? 'skill' : '');
+  const failed = toolResultMap.get(block.id)?.isError;
+  const cls = `subagent-chip${failed ? ' error' : ''}${block.agentLink ? '' : ' unlinked'}`;
+  const title = `${block.name || 'Subagent'}${kind ? ` (${kind})` : ''}: ${label}${failed ? ' — failed' : ''}`;
+  const inner = `<span class="subagent-chip-icon">${getToolIcon('task')}</span>`
+    + `<span class="subagent-chip-label">${esc(label)}</span>`
+    + (kind ? `<span class="subagent-chip-kind">${esc(kind)}</span>` : '');
+  // A link inside <summary> navigates without toggling the group.
+  return block.agentLink
+    ? `<a class="${cls}" href="${esc(block.agentLink)}" title="${esc(`Open subagent transcript — ${title}`)}">${inner}<span class="subagent-chip-arrow">&rarr;</span></a>`
+    : `<span class="${cls}" title="${esc(title)}">${inner}</span>`;
 }
 
 // Snapshot the DOM before a live refresh. Scope it to the transcript so opening
@@ -1524,7 +1585,8 @@ function renderToolUse(block, toolResultMap, projectDir, sessionId, key) {
   const inputId = 'ti_' + key;
   const resultId = 'tr_' + inputId;
 
-  let html = `<div class="tool-block" id="tool-${esc(block.id || '')}">`;
+  const blockClass = isSubagentRun(block) ? 'tool-block subagent-run' : 'tool-block';
+  let html = `<div class="${blockClass}" id="tool-${esc(block.id || '')}">`;
   html += `<div class="tool-header" onclick="toggleEl('${inputId}')">
     <span class="tool-icon">${icon}</span>
     <span class="tool-name ${nameClass}">${esc(block.name)}</span>
@@ -1665,7 +1727,7 @@ function getToolClass(name) {
   if (n === 'edit' || n === 'apply_patch') return 'edit';
   if (n === 'grep') return 'grep';
   if (n === 'glob') return 'glob';
-  if (n === 'task') return 'task';
+  if (n === 'task' || n === 'agent') return 'task';
   if (n === 'skill') return 'skill';
   return 'other';
 }
@@ -1676,7 +1738,7 @@ function getToolIcon(name) {
   if (n === 'apply_patch') return '\u270f\ufe0f';
   const icons = {
     bash: '\u25b6', read: '\ud83d\udcc4', write: '\u270f\ufe0f', edit: '\u270f\ufe0f',
-    grep: '\ud83d\udd0d', glob: '\ud83d\udcc1', task: '\ud83d\udd00', skill: '\u26a1',
+    grep: '\ud83d\udd0d', glob: '\ud83d\udcc1', task: '\ud83d\udd00', agent: '\ud83d\udd00', skill: '\u26a1',
     askuserquestion: '\u2753', enterplanmode: '\ud83d\udccb', exitplanmode: '\u2705',
     webfetch: '\ud83c\udf10', websearch: '\ud83c\udf10', todowrite: '\ud83d\udccb',
   };
@@ -1693,7 +1755,7 @@ function getToolDesc(block) {
   if (n === 'edit') return input.file_path || '';
   if (n === 'grep') return `${input.pattern || ''} ${input.path || ''}`.trim();
   if (n === 'glob') return input.pattern || '';
-  if (n === 'task') return input.description || input.prompt?.slice(0, 80) || '';
+  if (n === 'task' || n === 'agent') return input.description || input.prompt?.slice(0, 80) || '';
   if (n === 'skill') return input.skill || '';
   return JSON.stringify(input).slice(0, 80);
 }
@@ -1717,7 +1779,7 @@ function formatToolInput(block) {
   if (n === 'read') return input.file_path || '';
   if (n === 'write') return `File: ${input.file_path || ''}\n---\n${(input.content || '').slice(0, 2000)}`;
   if (n === 'edit') return `File: ${input.file_path || ''}\n\n--- old ---\n${input.old_string || ''}\n\n--- new ---\n${input.new_string || ''}`;
-  if (n === 'task') return input.prompt || '';
+  if (n === 'task' || n === 'agent') return input.prompt || '';
   if (n === 'grep') return JSON.stringify(input, null, 2);
   return JSON.stringify(input, null, 2);
 }
